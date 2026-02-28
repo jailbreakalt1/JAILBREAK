@@ -1,0 +1,44 @@
+async function handleChatbotResponse(conn, mek) {
+  try {
+    // Private chats only
+    if (!mek?.key?.remoteJid) return;
+    if (mek.key.remoteJid.endsWith("@g.us")) return;
+
+    const senderId = mek.key.remoteJid;
+
+    // Ignore commands
+    const text =
+      mek.message?.conversation ||
+      mek.message?.extendedTextMessage?.text;
+    if (text && (text.startsWith(".") || text.startsWith("!"))) return;
+
+    // ⬇️ ALTERNATING PRESENCE LOOP
+    const totalDuration = 120_000; // 2 mins
+    const intervalDuration = 1000; // 5 seconds per state
+
+    const states = ["recording", "typing"];
+    let elapsed = 0;
+    let index = 0;
+
+    const loop = setInterval(async () => {
+      const state = states[index % states.length];
+      await conn.sendPresenceUpdate(state, senderId).catch(() => {});
+      index++;
+      elapsed += intervalDuration;
+
+      if (elapsed >= totalDuration) {
+        clearInterval(loop);
+        // final pause so it doesn't stay stuck
+        await conn.sendPresenceUpdate("paused", senderId).catch(() => {});
+      }
+    }, intervalDuration);
+
+  } catch (err) {
+    console.error("Presence-only handler error:", err.message);
+  }
+}
+
+// ⚠️ DO NOT REMOVE THIS EXPORT
+module.exports = {
+  handleChatbotResponse,
+};
