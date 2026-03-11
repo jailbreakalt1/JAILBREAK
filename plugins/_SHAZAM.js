@@ -67,7 +67,7 @@ JB({
         // ─── DYNAMIC BAILEYS IMPORT ───
         let baileys;
         try {
-            baileys = await dynamicImport('@whiskeysockets/baileys');
+            baileys = await dynamicImport('@vreden/meta');
         } catch {
             return reply('⚠️ Internal error loading media tools.');
         }
