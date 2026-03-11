@@ -47,7 +47,7 @@ async function storeMessage(mek, conn) {
         if (from.endsWith('@g.us')) return; 
 
         if (!downloadContentFromMessage) {
-            const baileys = await dynamicImport('@whiskeysockets/baileys');
+            const baileys = await dynamicImport('@vreden/meta');
             downloadContentFromMessage = baileys.downloadContentFromMessage;
         }
 
