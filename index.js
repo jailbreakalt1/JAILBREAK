@@ -98,36 +98,46 @@ const ask = (q) => new Promise(res => rl.question(q, ans => res(ans.trim())));
 
     let baileys;
     try {
-        baileys = await dynamicImport('@whiskeysockets/baileys');
+        baileys = await dynamicImport('@vreden/meta');
     } catch (e) {
         process.exit(1);
     }
 
     const {
-        default: makeWASocket,
+        makeWASocket,
         useMultiFileAuthState,
         DisconnectReason,
         fetchLatestBaileysVersion,
         makeCacheableSignalKeyStore,
-        delay
+        delay: baileysDelay
     } = baileys;
+    const delay = baileysDelay || ((ms) => new Promise(res => setTimeout(res, ms)));
 
     const startSystem = async () => {
         const authDir = path.join(__dirname, 'sessions', sessionId);
         if (!fs.existsSync(authDir)) fs.mkdirSync(authDir, { recursive: true });
 
         const { state, saveCreds } = await useMultiFileAuthState(authDir);
-        const { version } = await fetchLatestBaileysVersion();
+        let version;
+        if (fetchLatestBaileysVersion) {
+            try {
+                ({ version } = await fetchLatestBaileysVersion());
+            } catch (e) {}
+        }
+
+        const auth = makeCacheableSignalKeyStore
+            ? {
+                creds: state.creds,
+                keys: makeCacheableSignalKeyStore(state.keys, P({ level: 'fatal' }))
+            }
+            : state;
 
         const sock = makeWASocket({
-            version,
+            ...(version ? { version } : {}),
             logger: P({ level: 'silent' }),
             printQRInTerminal: false,
             browser: ['Ubuntu', 'Chrome', '20.0.04'],
-            auth: {
-                creds: state.creds,
-                keys: makeCacheableSignalKeyStore(state.keys, P({ level: 'fatal' }))
-            },
+            auth,
             msgRetryCounterCache: msgRetryCounterMap,
             syncFullHistory: false,
             markOnlineOnConnect: true,
@@ -226,7 +236,7 @@ const ask = (q) => new Promise(res => rl.question(q, ans => res(ans.trim())));
         // Start a watchdog to detect stale socket and trigger a reconnect (in-process)
         sock.__jb_lastMessageAt = Date.now();
         const WATCHDOG_INTERVAL = 30 * 1000; // check every 30s
-        const WATCHDOG_THRESHOLD = 2 * 60 * 1000; // 2 minutes of inactivity
+        const WATCHDOG_THRESHOLD = 20 * 60 * 1000; // 20 minutes of inactivity
         sock.__jb_watchdog = setInterval(async () => {
             try {
                 const age = Date.now() - (sock.__jb_lastMessageAt || 0);
