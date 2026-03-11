@@ -13,7 +13,7 @@ JB({
   alias: ['tt', 'tik', 'fyp'],
   react: '🍿',
   desc: 'Download TikTok video.',
-  category: 'media',
+  category: 'group',
   filename: __filename
 }, async (conn, mek, m, { from, args, isGroup }) => {
   try {
