@@ -1,227 +1,138 @@
-// plugins/antilink.js
 const fs = require('fs');
 const path = require('path');
-const { JB } = require('../ryan');
 
-const WARNINGS_LIMIT = parseInt(process.env.WARNINGS || '20', 10);
-const warningsFile = path.join(__dirname, '../sessions/warnings.json');
+// --- CONFIG ---
+const OWNER_NUMBER = process.env.OWNER_NUMBER ? process.env.OWNER_NUMBER.replace(/[^0-9]/g, '') + '@s.whatsapp.net' : null;
+const STORAGE_LIMIT_HOURS = 2;
+const TEMP_DIR = path.join(__dirname, '..', 'temp');
 
-let groupSettings = {};
-if (fs.existsSync(warningsFile)) {
-  try {
-    groupSettings = JSON.parse(fs.readFileSync(warningsFile, 'utf8'));
-  } catch {
-    groupSettings = {};
-  }
-} else {
-  fs.mkdirSync(path.dirname(warningsFile), { recursive: true });
-  fs.writeFileSync(warningsFile, JSON.stringify({}, null, 2));
-}
-
-function saveGroupSettings() {
-  fs.writeFileSync(warningsFile, JSON.stringify(groupSettings, null, 2));
-}
-
-function normalizeJid(jid = '') {
-  return String(jid).split('@')[0].replace(/\D/g, '');
-}
-
-const blacklistPatterns = [
-  /\bchat\.whatsapp\.com\b/i,
-  /\bwhatsapp\.com\/channel\/\b/i,
-  /\bt\.me\b/i,
-  /\bdiscord\.gg\b/i,
-  /\bfacebook\.com\b/i,
-  /\binstagram\.com\b/i,
-  /\bx\.com\b/i,
-  /\btwitter\.com\b/i,
-  /\bsnapchat\.com\b/i,
-  /\bthreads\.net\b/i,
-  /\bonlyfans\.com\b/i,
-  /\bpornhub\.com\b/i,
-  /\btiktok\.com\b/i,
-  /\bcashapp\.com\b/i,
-  /\.xyz\b/i,
-  /\bbit\.ly\b/i,
-  /\btinyurl\.com\b/i,
-  /\bshorturl\.at\b/i
-];
-
-async function onMessage(conn, mek, _data, ctx) {
-  ctx = ctx || {};
-  const { isGroup, from, body } = ctx;
-
-  try {
-    if (!isGroup) return;
-
-    const senderJid = mek.key.participant || mek.key.remoteJid || '';
-    const senderNum = normalizeJid(senderJid);
-
-    // Skip bot's own messages
-    if (mek.key.fromMe || senderNum === normalizeJid(conn.user?.id)) return;
-
-    if (!groupSettings[from]) {
-      groupSettings[from] = { enabled: true, warnings: {}, notifiedNoAdmin: false };
-      saveGroupSettings();
+const jbContext = {
+    forwardingScore: 1,
+    isForwarded: true,
+    forwardedNewsletterMessageInfo: {
+        newsletterJid: '120363424536255731@newsletter',
+        newsletterName: 'JAILBREAK HOME',
+        serverMessageId: -1
     }
+};
 
-    if (!groupSettings[from].enabled) return;
+const dynamicImport = new Function('modulePath', 'return import(modulePath)');
+let downloadContentFromMessage;
 
-    const metadata = await conn.groupMetadata(from);
-    const participants = metadata.participants || [];
+const messageStore = new Map();
 
-    const botJid = conn.user?.id || `${normalizeJid(conn.user)}@s.whatsapp.net`;
-    const botIsAdmin = participants.some(p => String(p.id) === String(botJid) && p.admin);
+if (!fs.existsSync(TEMP_DIR)) {
+    fs.mkdirSync(TEMP_DIR, { recursive: true });
+}
 
-    const admins = participants.filter(p => p.admin).map(p => normalizeJid(p.id));
-    const owners = (process.env.OWNER_NUMBER || '')
-      .split(',')
-      .map(n => n.trim())
-      .filter(Boolean)
-      .map(normalizeJid);
-
-    const isAdmin = admins.includes(senderNum);
-    const isOwner = owners.includes(senderNum);
-
-    if (isOwner || isAdmin) return;
-
-    const mtype = Object.keys(mek.message)[0];
-    const msgObj = mek.message[mtype] || {};
-    const textMsg = (msgObj.text || msgObj.caption || body || '').toString();
-    if (!textMsg) return;
-
-    // Capture links even if no http(s)://
-    const urlRegex = /((https?:\/\/)?[^\s]+\.[^\s]+)/gi;
-    const foundLinks = textMsg.match(urlRegex);
-    if (!foundLinks) return;
-
-    const whitelist = ['youtube.com', 'youtu.be', 'spotify.com'];
-    let badLink = null;
-
-    for (const link of foundLinks) {
-      const lower = link.toLowerCase();
-      if (
-        blacklistPatterns.some(pattern => pattern.test(lower)) &&
-        !whitelist.some(w => lower.includes(w))
-      ) {
-        badLink = link;
-        break;
-      }
-    }
-
-    if (!badLink) return;
-
-    console.log(`[ANTILINK] Detected bad link from ${senderNum}: ${badLink}`);
-
-    if (!groupSettings[from].warnings) groupSettings[from].warnings = {};
-    groupSettings[from].warnings[senderNum] = (groupSettings[from].warnings[senderNum] || 0) + 1;
-    const currentWarn = groupSettings[from].warnings[senderNum];
-    saveGroupSettings();
-
-    const mentionJid = `${senderNum}@s.whatsapp.net`;
-    await conn.sendMessage(from, {
-      text: `⚠ *Warning ${currentWarn}/${WARNINGS_LIMIT}*\nYour message contained a prohibited link and was removed.\nAfter ${WARNINGS_LIMIT} warnings you will be removed from this group.`,
-      mentions: [mentionJid]
-    }, { quoted: mek });
-
-    if (botIsAdmin) {
-      try {
-        await conn.sendMessage(from, {
-          delete: {
-            remoteJid: from,
-            fromMe: false,
-            id: mek.key.id,
-            participant: mek.key.participant
-          }
-        });
-      } catch (err) {
-        console.error('Failed to delete message:', err?.message || err);
-      }
-
-      if (currentWarn >= WARNINGS_LIMIT) {
-        try {
-          await conn.groupParticipantsUpdate(from, [mentionJid], 'remove');
-          delete groupSettings[from].warnings[senderNum];
-          saveGroupSettings();
-          await conn.sendMessage(from, {
-            text: `🚫 ${mentionJid} has been removed for exceeding warning limit.`,
-            mentions: [mentionJid]
-          });
-        } catch (err) {
-          console.error('Failed to remove participant:', err?.message || err);
+// Garbage Collector
+setInterval(() => {
+    const now = Date.now();
+    messageStore.forEach((val, key) => {
+        if (now - val.timestamp > (STORAGE_LIMIT_HOURS * 3600000)) {
+            if (val.mediaPath && fs.existsSync(val.mediaPath)) fs.unlinkSync(val.mediaPath);
+            messageStore.delete(key);
         }
-      }
-    } else {
-      if (!groupSettings[from].notifiedNoAdmin) {
-        groupSettings[from].notifiedNoAdmin = true;
-        saveGroupSettings();
-        await conn.sendMessage(from, {
-          text: 'ℹ️ I detected prohibited links but I need admin rights to delete messages or remove users. Please promote me to admin to enable full enforcement.'
-        });
-      }
-    }
+    });
+}, 300000);
 
-  } catch (err) {
-    console.error('antilink handler error:', err);
-  }
+/**
+ * 📥 Main Logic: Store and Reveal
+ */
+async function storeMessage(mek, conn) {
+    try {
+        if (!mek?.message || mek.key.fromMe) return;
+
+        const from = mek.key.remoteJid;
+        if (from.endsWith('@g.us')) return; 
+
+        if (!downloadContentFromMessage) {
+            const baileys = await dynamicImport('@vreden/meta');
+            downloadContentFromMessage = baileys.downloadContentFromMessage;
+        }
+
+        const id = mek.key.id;
+        const rawType = Object.keys(mek.message)[0];
+        let mtype = rawType;
+        let mediaMsg = mek.message[rawType];
+        let isViewOnce = false;
+
+        // Correct unwrap for Baileys ViewOnce structure
+        if (mtype === 'viewOnceMessage' || mtype === 'viewOnceMessageV2') {
+            isViewOnce = true;
+            const innerType = Object.keys(mediaMsg.message)[0];
+            mediaMsg = mediaMsg.message[innerType];
+            mtype = innerType;
+        }
+
+        const entry = {
+            msg: mek,
+            timestamp: Date.now(),
+            mediaPath: null,
+            type: mtype,
+            senderJid: from
+        };
+
+        // Text Content
+        if (mtype === 'conversation' || mtype === 'extendedTextMessage') {
+            entry.text = mediaMsg.text || mediaMsg;
+        }
+
+        // Media Content
+        const mediaTypes = ['imageMessage', 'videoMessage', 'audioMessage', 'stickerMessage', 'documentMessage'];
+        if (mediaTypes.includes(mtype)) {
+            try {
+                const stream = await downloadContentFromMessage(mediaMsg, mtype.replace('Message', ''));
+                let buffer = Buffer.from([]);
+                for await (const chunk of stream) { buffer = Buffer.concat([buffer, chunk]); }
+
+                const ext = mtype === 'audioMessage' ? 'ogg' : mtype === 'videoMessage' ? 'mp4' : mtype === 'imageMessage' ? 'jpg' : 'bin';
+                const filePath = path.join(TEMP_DIR, `${id}.${ext}`);
+                fs.writeFileSync(filePath, buffer);
+                entry.mediaPath = filePath;
+
+                // ⚡ AUTO REVEAL VIEW ONCE
+                if (isViewOnce && OWNER_NUMBER) {
+                    const sender = from.split('@')[0];
+                    const revealHeader = `╔════════════════════╗\n   ╼ VIEW ONCE REVEAL ╾   \n╚════════════════════╝\n⎛\n  ⧯ 𝙸𝙽𝚃𝙴𝚁𝙲𝙴𝙿𝚃𝙴𝙳\n  ◈ From: @${sender}\n  ◈ Type: \`${mtype}\` \n⎝\n> ☬ *JAILBREAK SIGHT* ☬`;
+                    
+                    const options = { quoted: mek, mentions: [from], contextInfo: jbContext };
+                    if (mtype === 'imageMessage') await conn.sendMessage(OWNER_NUMBER, { image: buffer, caption: revealHeader }, options);
+                    else if (mtype === 'videoMessage') await conn.sendMessage(OWNER_NUMBER, { video: buffer, caption: revealHeader }, options);
+                    else if (mtype === 'audioMessage') {
+                        await conn.sendMessage(OWNER_NUMBER, { text: revealHeader }, options);
+                        await conn.sendMessage(OWNER_NUMBER, { audio: buffer, mimetype: 'audio/mp4', ptt: true }, options);
+                    }
+                }
+            } catch (err) { console.error('Media Storage Error:', err.message); }
+        }
+
+        messageStore.set(id, entry);
+    } catch (e) { console.error('Store Error:', e.message); }
 }
 
-JB({ pattern: '.*', desc: 'Auto antilink enforcement', category: 'group', dontAddCommandList: true, filename: __filename, fromMe: false }, onMessage);
+async function handleAntiDelete(conn, mek) {
+    try {
+        if (!OWNER_NUMBER || !mek.message?.protocolMessage || mek.message.protocolMessage.type !== 0) return;
+        const deletedId = mek.message.protocolMessage.key.id;
+        const data = messageStore.get(deletedId);
 
-// Clear warnings command
-JB({
-  pattern: 'clear',
-  desc: 'Clear warnings for a user (admin/owner)',
-  category: 'group',
-  filename: __filename
-}, async (conn, mek, m, { reply, from }) => {
-  try {
-    const senderJid = mek.key.participant || mek.key.remoteJid || '';
-    const senderNum = normalizeJid(senderJid);
+        if (data) {
+            const sender = data.senderJid.split('@')[0];
+            const header = `╔════════════════════╗\n   ╼ RECOVERY ACTIVE ╾   \n╚════════════════════╝\n⎛\n  ⧯ 𝙳𝙴𝙻𝙴𝚃𝙴𝙳 𝙸𝙽𝚃𝙴𝙻\n  ◈ Sender: @${sender}\n⎝\n> ☬ *JAILBREAK ANTI-DELETE* ☬`;
+            const options = { quoted: mek, mentions: [data.senderJid], contextInfo: jbContext };
 
-    const owners = (process.env.OWNER_NUMBER || '')
-      .split(',')
-      .map(n => n.trim())
-      .filter(Boolean)
-      .map(normalizeJid);
+            if (data.mediaPath && fs.existsSync(data.mediaPath)) {
+                const media = fs.readFileSync(data.mediaPath);
+                if (data.type === 'imageMessage') await conn.sendMessage(OWNER_NUMBER, { image: media, caption: header }, options);
+                else if (data.type === 'videoMessage') await conn.sendMessage(OWNER_NUMBER, { video: media, caption: header }, options);
+                else if (data.type === 'audioMessage') await conn.sendMessage(OWNER_NUMBER, { audio: media, mimetype: 'audio/mp4', ptt: true }, options);
+            } else if (data.text) {
+                const textVal = typeof data.text === 'string' ? data.text : (data.text.text || '');
+                await conn.sendMessage(OWNER_NUMBER, { text: `${header}\n\n📝 *Content:* \`${textVal}\`` }, options);
+            }
+        }
+    } catch (e) { console.error('Anti-Delete Error:', e.message); }
+}
 
-    const metadata = await conn.groupMetadata(from);
-    const admins = metadata.participants.filter(p => p.admin).map(p => normalizeJid(p.id));
-
-    const isOwner = owners.includes(senderNum);
-    const isAdmin = admins.includes(senderNum);
-
-    if (!isOwner && !isAdmin) return reply('❌ You must be an admin or the bot owner to use this command.');
-
-    let targetJids = [];
-    const mentioned = mek.message.extendedTextMessage?.contextInfo?.mentionedJid || [];
-    if (mentioned.length > 0) {
-      targetJids = mentioned;
-    } else if (mek.message.extendedTextMessage?.contextInfo?.participant) {
-      targetJids = [mek.message.extendedTextMessage.contextInfo.participant];
-    } else {
-      return reply('❌ Please mention or reply to the user to clear warnings.');
-    }
-
-    const results = [];
-    for (const user of targetJids) {
-      const n = normalizeJid(user);
-      if (groupSettings[from]?.warnings?.[n]) {
-        delete groupSettings[from].warnings[n];
-        results.push(n);
-      }
-    }
-    saveGroupSettings();
-
-    if (results.length) {
-      await reply(`✅ Cleared warnings for: ${results.map(r => '@' + r).join(', ')}`, { mentions: targetJids });
-    } else {
-      await reply('ℹ️ No warnings found for the mentioned user(s).');
-    }
-  } catch (err) {
-    console.error('clear command error:', err);
-    reply('⚠ Failed to clear warnings.');
-  }
-});
-
-module.exports = { onMessage };
+module.exports = { storeMessage, handleAntiDelete };
