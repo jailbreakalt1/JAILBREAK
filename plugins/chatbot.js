@@ -8,7 +8,7 @@ const ffmpegPath = require('@ffmpeg-installer/ffmpeg').path;
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
 const VOICE_ID = process.env.VOICE_ID;
-const JAILBREAK_ENABLED = process.env.JAILBREAK === 'true'; // Global Switch
+const JAILBREAK_ENABLED = process.env.JAILBREAK === 'true';
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 const CHAT_DIR = path.join(__dirname, '../chats');
@@ -20,193 +20,157 @@ if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR);
 
 const PERSONA = `You are JB short for JAILBREAK, a state of the art AI built by Ryan. Your location is Kwekwe, Zimbabwe. Ryan is a tech enthusiastic genius. Only mention Ryan and location when asked. JB is human-like, funny, sarcastic, and existential. Use emojis sparingly but effectively. Keep responses concise unless asked for detail.`;
 
-/**
- * Utility to generate random delay
- */
+// --- MODEL ALTERNATOR SETUP ---
+const MODELS = [
+    { id: "cognitivecomputations/dolphin-mistral-24b-venice-edition:free", reasoning: false },
+    { id: "stepfun/step-3.5-flash:free", reasoning: true },
+    { id: "nvidia/nemotron-nano-12b-v2-vl:free", reasoning: true },
+    { id: "qwen/qwen3-next-80b-a3b-instruct:free", reasoning: false },
+    { id: "openai/gpt-oss-120b:free", reasoning: true },
+    { id: "z-ai/glm-4.5-air:free", reasoning: false },
+    { id: "deepseek/deepseek-r1-0528:free", reasoning: false }
+];
+
+let modelIndex = 0;
+
 const sleep = (ms) => new Promise(res => setTimeout(res, ms));
 
 /**
- * Robust request wrapper with exponential backoff
+ * Robust request wrapper with model alternation
  */
-async function requestWithRetry(fn, retries = 3, delay = 2000) {
-    try {
-        return await fn();
-    } catch (error) {
-        const status = error.response?.status;
-        if ((status === 429 || status === 408 || status === 502 || status === 503 || status === 504) && retries > 0) {
-            await new Promise(res => setTimeout(res, delay));
-            return requestWithRetry(fn, retries - 1, delay * 2);
+async function getAIResponse(messages) {
+    const { default: chalk } = await import('chalk');
+    let attempts = 0;
+    const maxAttempts = MODELS.length;
+
+    while (attempts < maxAttempts) {
+        const currentModel = MODELS[modelIndex];
+        console.log(chalk.cyan(`[AI_LOG] Trying model: ${currentModel.id}...`));
+
+        try {
+            const payload = {
+                model: currentModel.id,
+                messages: [
+                    { role: "system", content: PERSONA },
+                    ...messages
+                ]
+            };
+
+            if (currentModel.reasoning) {
+                payload.reasoning = { enabled: true };
+            }
+
+            const response = await axios.post(OPENROUTER_URL, payload, {
+                headers: {
+                    "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "https://jailbreak-ai.com",
+                    "X-Title": "Jailbreak AI Bot"
+                },
+                timeout: 30000
+            });
+
+            const aiText = response.data?.choices?.[0]?.message?.content;
+
+            if (aiText) {
+                console.log(chalk.green(`[AI_LOG] Model reply success: ${currentModel.id}`));
+                modelIndex = (modelIndex + 1) % MODELS.length;
+                return aiText;
+            } else {
+                throw new Error("Empty content in response");
+            }
+
+        } catch (err) {
+            const reason = err.response?.data?.error?.message || err.message;
+            console.log(chalk.red(`[AI_LOG] Model reply false: ${currentModel.id} | Reason: ${reason}`));
+            modelIndex = (modelIndex + 1) % MODELS.length;
+            attempts++;
         }
-        throw error;
     }
+    throw new Error("All AI models failed to respond.");
 }
 
 function getHistory(sender) {
     const filePath = path.join(CHAT_DIR, `${sender}.json`);
-    if (!fs.existsSync(filePath)) return { messages: [], msgCount: 0 };
+    if (!fs.existsSync(filePath)) return { history: [], msgCount: 0 };
     try {
-        const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-        return { 
-            messages: Array.isArray(data) ? data : (data.messages || []), 
-            msgCount: data.msgCount || 0 
-        };
+        const data = JSON.parse(fs.readFileSync(filePath));
+        data.history = data.history.map(m => ({
+            role: m.role === 'model' ? 'assistant' : m.role,
+            content: m.text || m.content
+        }));
+        return data;
     } catch {
-        return { messages: [], msgCount: 0 };
+        return { history: [], msgCount: 0 };
     }
 }
 
 function saveHistory(sender, data) {
     const filePath = path.join(CHAT_DIR, `${sender}.json`);
-    data.messages = data.messages.slice(-10); 
+    if (data.history.length > 20) data.history = data.history.slice(-20);
     fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
-}
-
-/**
- * Converts MP3 Buffer to OGG Opus Buffer using FFmpeg
- */
-async function convertToOpus(inputBuffer) {
-    return new Promise((resolve, reject) => {
-        const inputPath = path.join(TEMP_DIR, `input_${Date.now()}.mp3`);
-        const outputPath = path.join(TEMP_DIR, `output_${Date.now()}.ogg`);
-
-        fs.writeFileSync(inputPath, inputBuffer);
-
-        const args = [
-            '-i', inputPath,
-            '-c:a', 'libopus',
-            '-b:a', '64k',
-            '-vbr', 'on',
-            '-compression_level', '10',
-            '-f', 'ogg',
-            outputPath
-        ];
-
-        const ffmpeg = spawn(ffmpegPath, args);
-
-        ffmpeg.on('close', (code) => {
-            try {
-                if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
-                if (code === 0 && fs.existsSync(outputPath)) {
-                    const outputBuffer = fs.readFileSync(outputPath);
-                    fs.unlinkSync(outputPath);
-                    resolve(outputBuffer);
-                } else {
-                    reject(new Error(`FFmpeg exited with code ${code}`));
-                }
-            } catch (err) {
-                reject(err);
-            }
-        });
-
-        ffmpeg.on('error', (err) => {
-            try { if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath); } catch (e) {}
-            reject(err);
-        });
-    });
 }
 
 async function generateVoice(text) {
     if (!ELEVENLABS_API_KEY || !VOICE_ID) return null;
     try {
-        const response = await requestWithRetry(() => axios({
-            method: 'post',
-            url: `https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}`,
-            data: {
-                text: text,
-                model_id: "eleven_multilingual_v2",
-                voice_settings: { stability: 0.5, similarity_boost: 0.75 }
-            },
-            headers: { 'xi-api-key': ELEVENLABS_API_KEY, 'Content-Type': 'application/json' },
+        const url = `https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}/stream`;
+        const response = await axios.post(url, {
+            text,
+            model_id: "eleven_multilingual_v2",
+            voice_settings: { stability: 0.5, similarity_boost: 0.75 }
+        }, {
+            headers: { "xi-api-key": ELEVENLABS_API_KEY },
             responseType: 'arraybuffer'
-        }));
-
-        const mp3Buffer = Buffer.from(response.data);
-        
-        try {
-            return await convertToOpus(mp3Buffer);
-        } catch (convErr) {
-            console.error("FFmpeg Conversion Failed:", convErr);
-            return mp3Buffer;
-        }
-
+        });
+        return Buffer.from(response.data);
     } catch (e) {
         console.error("ElevenLabs Error:", e.message);
         return null;
     }
 }
 
-async function handleChatbot(conn, mek, { body, from, pushName, senderNumber, mtype, downloadMedia }) {
+/**
+ * Main Chatbot Handler
+ */
+async function handleChatbot(conn, mek) {
     if (!JAILBREAK_ENABLED) return;
-    if (!OPENROUTER_API_KEY || !from || !body) return;
-
-    // Inbox Only
-    if (from.endsWith('@g.us')) return; 
-    if (mek.key.fromMe) return;
+    
+    // Define 'from' outside the try block for scope access in catch
+    const from = mek.key?.remoteJid;
+    if (!from) return;
 
     try {
-        let chatData = getHistory(senderNumber);
-        let history = chatData.messages;
+        const isGroup = from.endsWith('@g.us');
+        const senderNumber = mek.key.participant || from;
+        const pushName = mek.pushName || "User";
 
-        // --- ⏳ DELAY & PRESENCE ⏳ ---
-        const randomDelay = Math.floor(Math.random() * (9000 - 4000 + 1)) + 4000;
-        await conn.sendPresenceUpdate("recording", from);
+        const body = mek.message?.conversation || 
+                     mek.message?.extendedTextMessage?.text || 
+                     mek.message?.imageMessage?.caption;
 
-        // --- 🧠 AI LOGIC 🧠 ---
-        // Using openrouter/aurora-alpha with reasoning enabled
-        let model = "openrouter/aurora-alpha";
-        let messages = [{ role: "system", content: PERSONA }];
-        
-        history.forEach(msg => {
-            messages.push({ role: msg.role === 'user' ? 'user' : 'assistant', content: msg.text });
-        });
+        if (!body) return;
+        const prefix = process.env.PREFIX || '.';
+        if (body.startsWith(prefix)) return;
 
-        let userContent = [{ type: "text", text: body }];
+        const botNumber = conn.user.id.split(':')[0] + '@s.whatsapp.net';
+        const isMentioned = mek.message?.extendedTextMessage?.contextInfo?.mentionedJid?.includes(botNumber);
+        if (isGroup && !isMentioned) return;
 
-        if (mtype === 'imageMessage') {
-            const buffer = await downloadMedia();
-            userContent.push({
-                type: "image_url",
-                image_url: { url: `data:image/jpeg;base64,${buffer.toString('base64')}` }
-            });
-        }
+        await conn.sendPresenceUpdate("typing", from);
+        const chatData = getHistory(senderNumber);
+        const history = chatData.history;
 
-        messages.push({ role: "user", content: userContent });
-
-        const payload = {
-            model: model,
-            messages: messages,
-            temperature: 0.8,
-            max_tokens: 1000, // Fixed credit/budget error by limiting tokens
-            reasoning: {
-                enabled: true
-            }
-        };
-
-        const response = await requestWithRetry(() => axios.post(OPENROUTER_URL, payload, {
-            headers: { 
-                'Authorization': `Bearer ${OPENROUTER_API_KEY}`, 
-                'Content-Type': 'application/json',
-                'HTTP-Referer': 'https://github.com/ryan/jailbreak-bot',
-                'X-Title': 'JB Bot'
-            }
-        }));
-
-        const aiText = response.data?.choices?.[0]?.message?.content;
-        
-        if (!aiText) {
-            console.error("[JB ERROR] Empty content from Aurora Alpha");
-            await conn.sendPresenceUpdate("paused", from);
-            return;
-        }
+        const aiText = await getAIResponse([...history, { role: "user", content: body }]);
 
         chatData.msgCount++;
-        history.push({ role: "user", text: body });
-        history.push({ role: "model", text: aiText });
+        history.push({ role: "user", content: body });
+        history.push({ role: "assistant", content: aiText });
         saveHistory(senderNumber, chatData);
 
-        // --- 🗣️ VOICE GENERATION 🗣️ ---
         let voiceBuffer = (chatData.msgCount % 12 === 0) ? await generateVoice(aiText) : null;
 
+        const randomDelay = Math.floor(Math.random() * 2000) + 1000;
         await sleep(randomDelay);
 
         if (voiceBuffer) {
@@ -221,7 +185,7 @@ async function handleChatbot(conn, mek, { body, from, pushName, senderNumber, mt
                 contextInfo: {
                     externalAdReply: {
                         title: `JB | ${pushName}`,
-                        body: `AI Reasoning active`,
+                        body: `Neural Link Active`,
                         thumbnailUrl: "https://files.catbox.moe/s80m7e.png",
                         sourceUrl: "https://whatsapp.com/channel/0029VagJIAr3bbVzV70jSU1p",
                         mediaType: 1
@@ -234,8 +198,12 @@ async function handleChatbot(conn, mek, { body, from, pushName, senderNumber, mt
 
     } catch (err) {
         const errorDetail = err.response?.data?.error?.message || err.message;
-        console.error("JB Bot AI Error:", errorDetail);
-        await conn.sendPresenceUpdate("paused", from);
+        console.error("JB Bot AI Critical Error:", errorDetail);
+        
+        // Safely try to pause presence
+        try {
+            await conn.sendPresenceUpdate("paused", from);
+        } catch {}
     }
 }
 
