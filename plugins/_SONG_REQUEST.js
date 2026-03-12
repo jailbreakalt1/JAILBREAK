@@ -5,6 +5,7 @@ const axios = require("axios");
 // Pulling backend URL from .env with a fallback to the internal IP
 const BACKEND_URL = process.env.BACKEND_URL || "http://172.18.0.179:5000"; 
 const SONG_REQUEST_CHANNEL_LINK = "https://whatsapp.com/channel/0029VagJIAr3bbVzV70jSU1p";
+const MAX_IMG_CARDS = 5;
 
 const jbContext = {
     forwardingScore: 1,
@@ -225,13 +226,68 @@ JB({
         return reply("⫎ `Error: No valid results found.` ❌");
       }
 
-      const count = Math.min(images.length, 5);
-      
-      for (let i = 0; i < count; i++) {
-        await sock.sendMessage(from, { 
-            image: { url: images[i] }, 
-            caption: `⧯ *𝙹𝙰𝙸𝙻𝙱𝚁𝙴𝙰𝙺 𝙸𝙼𝙰𝙶𝙴 𝚂𝙴𝙰𝚁𝙲𝙷*\n⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n◈ *𝚀𝚄𝙴𝚁𝚈 :* \`${q}\`\n◈ *𝚁𝙴𝚂𝚄𝙻𝚃 :* \`${i + 1} of ${count}\`\n⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n> ☬ *𝚂𝚈𝚂𝚃𝙴𝙼 𝙰𝙲𝚃𝙸𝚅𝙴* ☬`
-        }, { quoted: mek });
+      const normalizeUrl = (value) => {
+        try {
+          const parsed = new URL(value);
+          if (parsed.protocol === "http:" || parsed.protocol === "https:") return parsed.toString();
+          return null;
+        } catch {
+          return null;
+        }
+      };
+
+      const count = Math.min(images.length, MAX_IMG_CARDS);
+      const cards = images
+        .slice(0, count)
+        .map((imageUrl, index) => {
+          const validatedImageUrl = normalizeUrl(imageUrl);
+          if (!validatedImageUrl) return null;
+
+          return {
+            image: validatedImageUrl,
+            title: `Result ${index + 1}`,
+            body: `Image match for “${q}”.`,
+            footer: "Powered by JAILBREAK Visual Search",
+            buttons: [
+              {
+                type: "quick_reply",
+                id: `img_refine_${index + 1}`,
+                text: "Refine Search"
+              },
+              {
+                type: "url",
+                id: `img_open_${index + 1}`,
+                text: "Open Image",
+                url: validatedImageUrl
+              }
+            ]
+          };
+        })
+        .filter(Boolean);
+
+      if (!cards.length) {
+        return reply("⫎ `Error: No valid image URLs were returned.` ❌");
+      }
+
+      const payload = {
+        text: `Found ${cards.length} image result(s) for “${q}”.`,
+        title: "JAILBREAK Image Search",
+        subtitle: "Professional visual lookup",
+        footer: "JAILBREAK • Fast • Reliable • Consistent",
+        cards
+      };
+
+      try {
+        await sock.sendMessage(from, payload, { quoted: mek });
+      } catch (structuredError) {
+        console.warn("IMG STRUCTURED PAYLOAD FALLBACK:", structuredError?.message || structuredError);
+
+        for (let i = 0; i < cards.length; i++) {
+          await sock.sendMessage(from, {
+            image: { url: cards[i].image },
+            caption: `*JAILBREAK IMAGE SEARCH*\nQuery: ${q}\nResult: ${i + 1} of ${cards.length}\nSource: JAILBREAK Visual Search`
+          }, { quoted: mek });
+        }
       }
 
       await sock.sendMessage(from, { react: { text: "✅", key: mek.key } });
