@@ -1,10 +1,18 @@
 const { JB } = require("../ryan");
 const yts = require("yt-search");
 const axios = require("axios");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 
 // Pulling backend URL from .env with a fallback to the internal IP
 const BACKEND_URL = process.env.BACKEND_URL || "http://172.18.0.179:5000"; 
 const SONG_REQUEST_CHANNEL_LINK = "https://whatsapp.com/channel/0029VagJIAr3bbVzV70jSU1p";
+const PENDING_SONG_TTL_MS = 2 * 60 * 1000;
+const BUTTON_ID_AUDIO = "play_audio";
+const BUTTON_ID_DOCUMENT = "play_document";
+const pendingSongRequests = new Map();
+=======
 const MAX_IMG_CARDS = 5;
 
 const jbContext = {
@@ -18,6 +26,81 @@ const jbContext = {
 };
 
 /**
+ * Helpers for song request flow
+ */
+const isBackendTimeout = (err) => err?.code === "ECONNABORTED";
+
+const safeUnlink = (filePath) => {
+  if (!filePath) return;
+  try {
+    fs.unlinkSync(filePath);
+  } catch (_) {}
+};
+
+const setPendingSongRequest = (key, payload) => {
+  const previous = pendingSongRequests.get(key);
+  if (previous?.timeoutRef) clearTimeout(previous.timeoutRef);
+
+  const timeoutRef = setTimeout(() => {
+    pendingSongRequests.delete(key);
+  }, PENDING_SONG_TTL_MS);
+
+  pendingSongRequests.set(key, {
+    ...payload,
+    timeoutRef,
+    createdAt: Date.now()
+  });
+};
+
+const pullPendingSongRequest = (key) => {
+  const pending = pendingSongRequests.get(key);
+  if (!pending) return null;
+
+  if (pending.timeoutRef) clearTimeout(pending.timeoutRef);
+  pendingSongRequests.delete(key);
+  return pending;
+};
+
+const buildJailbreakCaption = ({ info, author, ago, pushName, emoji }) =>
+`⧯ *𝙹𝙰𝙸𝙻𝙱𝚁𝙴𝙰𝙺_𝙰𝙸* 𝙱𝚁𝙸𝙽𝙶𝚂 𝚈𝙾𝚄
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+◈ *𝚃𝙸𝚃𝙻𝙴 :* \`${info.title}\`
+◈ *𝙰𝚁𝚃𝙸𝚂𝚃 :* \`${author}\`
+◈ *𝚁𝙴𝙻𝙴𝙰𝚂𝙴𝙳 :* \`${ago}\`
+◈ *𝙳𝚄𝚁𝙰𝚃𝙸𝙾𝙽 :* \`${info.timestamp}\`
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+⎆ @${pushName} _ENJOY_ ${emoji}
+  follow our channel
+> ☬ *𝚂𝙾𝚄𝚁𝙲𝙴 :* 𝙹𝙰𝙸𝙻𝙱𝚁𝙴𝙰𝙺 𝙷𝚄𝙱 ☬`;
+
+const stageAResolveSong = async (query) => {
+  let url;
+  let ytsInfo = null;
+
+  if (query.includes("youtube.com/") || query.includes("youtu.be/")) {
+    url = query;
+    const search = await yts(query);
+    if (search.videos.length) ytsInfo = search.videos[0];
+  } else {
+    const search = await yts(query);
+    if (!search.videos.length) return null;
+    ytsInfo = search.videos[0];
+    url = ytsInfo.url;
+  }
+
+  const infoRes = await axios.post(`${BACKEND_URL}/video_info`, { url }, { timeout: 20000 });
+  const info = infoRes.data;
+
+  return {
+    url,
+    info,
+    author: ytsInfo?.author?.name || "Unknown Artist",
+    ago: ytsInfo?.ago || "Recently",
+    thumbnail: info.thumbnail || ytsInfo?.thumbnail || "https://files.catbox.moe/s80m7e.png"
+  };
+};
+
+/**
  * .song / .play command
  */
 JB({
@@ -28,87 +111,138 @@ JB({
     category: "group",
     filename: __filename,
   },
-  async (sock, mek, m, { from, args, reply }) => {
+  async (sock, mek, m, { from, args, reply, sender, prefix }) => {
+    let thumbPath = null;
     try {
       const q = args.join(" ");
       if (!q) return reply("⧯ `I CAN DO A LOT OF THINGS, BUT CAN'T GUESS SONGS` \n\n `> Provide a song name or YouTube link.` 🎵");
 
       await sock.sendMessage(from, { react: { text: "⏳", key: mek.key } });
 
-      let url;
-      let ytsInfo = null;
-
-      if (q.includes("youtube.com/") || q.includes("youtu.be/")) {
-        url = q;
-        // Try to fetch search info anyway for the rich caption
-        const search = await yts(q);
-        if (search.videos.length) ytsInfo = search.videos[0];
-      } else {
-        const search = await yts(q);
-        if (!search.videos.length) return reply("⫎ `Error: No results found in the database.` ❌");
-        ytsInfo = search.videos[0];
-        url = ytsInfo.url;
+      const stageA = await stageAResolveSong(q);
+      if (!stageA) {
+        return reply("⫎ `Error: No results found in the database.` ❌");
       }
 
-      // 1. Get Metadata
-      const infoRes = await axios.post(`${BACKEND_URL}/video_info`, { url }, { timeout: 20000 });
-      const info = infoRes.data;
+      const thumbnailRes = await axios.get(stageA.thumbnail, { responseType: "arraybuffer", timeout: 15000 });
+      thumbPath = path.join(os.tmpdir(), `jb-song-${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`);
+      fs.writeFileSync(thumbPath, Buffer.from(thumbnailRes.data));
 
-      // Extract rich data for caption
-      const author = ytsInfo ? ytsInfo.author.name : "Unknown Artist";
-      const ago = ytsInfo ? ytsInfo.ago : "Recently";
-      const sender = mek.key.participant || from;
-      const pushName = mek.pushName || "User";
-
-      // 2. Download Audio (Backend auto-converts to MP3)
-      const downloadRes = await axios({
-        method: 'post',
-        url: `${BACKEND_URL}/download/audio`,
-        data: { url },
-        responseType: 'arraybuffer',
-        timeout: 300000 // 5 minutes
+      const requestKey = `${from}:${sender}`;
+      setPendingSongRequest(requestKey, {
+        from,
+        sender,
+        pushName: mek.pushName || "User",
+        ...stageA
       });
 
-      // 3. Format the Caption
-      const docCaption = 
-`⧯ *𝙹𝙰𝙸𝙻𝙱𝚁𝙴𝙰𝙺_𝙰𝙸* 𝙱𝚁𝙸𝙽𝙶𝚂 𝚈𝙾𝚄
-⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
-◈ *𝚃𝙸𝚃𝙻𝙴 :* \`${info.title}\`
-◈ *𝙰𝚁𝚃𝙸𝚂𝚃 :* \`${author}\`
-◈ *𝚁𝙴𝙻𝙴𝙰𝚂𝙴𝙳 :* \`${ago}\`
-◈ *𝙳𝚄𝚁𝙰𝚃𝙸𝙾𝙽 :* \`${info.timestamp}\`
-⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
-⎆ @${pushName} _ENJOY_ 🎧
-  follow our channel
-> ☬ *𝚂𝙾𝚄𝚁𝙲𝙴 :* 𝙹𝙰𝙸𝙻𝙱𝚁𝙴𝙰𝙺 𝙷𝚄𝙱 ☬`;
+      const button_params = [
+        { buttonId: `${prefix}song_pick ${BUTTON_ID_AUDIO}`, buttonText: { displayText: "AUDIO" }, type: 1 },
+        { buttonId: `${prefix}song_pick ${BUTTON_ID_DOCUMENT}`, buttonText: { displayText: "DOCUMENT" }, type: 1 }
+      ];
 
-      // 4. Send as Document
       await sock.sendMessage(from, {
-          document: Buffer.from(downloadRes.data),
-          mimetype: 'audio/mpeg',
-          fileName: `${info.title}.mp3`,
-          caption: docCaption,
-          mentions: [sender], // Mentions the user in the caption
-          contextInfo: {
-            ...jbContext,
-            externalAdReply: {
-              title: info.title,
-              body: `Duration: ${info.timestamp} | JAILBREAK AUDIO`,
-              thumbnailUrl: info.thumbnail || "https://files.catbox.moe/s80m7e.png",
-              renderLargerThumbnail: true,
-              mediaType: 1,
-              sourceUrl: url
-            }
-          }
+        image: fs.readFileSync(thumbPath),
+        caption: "Choose an option:",
+        buttons: button_params,
+        footer: "☬ JAILBREAK HUB ☬"
       }, { quoted: mek });
 
       await sock.sendMessage(from, { react: { text: "✅", key: mek.key } });
 
     } catch (e) {
       console.error("SONG ERROR:", e);
+      if (isBackendTimeout(e)) {
+        await reply("⫎ `Backend timeout while preparing your request. Please try again.` ⏱️");
+        await sock.sendMessage(from, { react: { text: "❌", key: mek.key } });
+        return;
+      }
       const errMsg = e.response?.data?.error || e.message;
       reply(`⫎ *System Error:* \`${errMsg}\`\n\n> ◈ URL: ${BACKEND_URL}`);
       await sock.sendMessage(from, { react: { text: "❌", key: mek.key } });
+    } finally {
+      safeUnlink(thumbPath);
+    }
+  }
+);
+
+JB({
+    pattern: "song_pick",
+    react: "🎵",
+    desc: "Internal button handler for song requests",
+    category: "group",
+    filename: __filename,
+  },
+  async (sock, mek, m, { from, sender, args, reply }) => {
+    const selected = args[0];
+    if (![BUTTON_ID_AUDIO, BUTTON_ID_DOCUMENT].includes(selected)) {
+      return reply("⫎ `Invalid button payload received. Please run .song again.` ❌");
+    }
+
+    const requestKey = `${from}:${sender}`;
+    const pending = pullPendingSongRequest(requestKey);
+
+    if (!pending) {
+      return reply("⫎ `No pending selection found or it has expired. Please run .song again.` ⌛");
+    }
+
+    try {
+      await sock.sendMessage(from, { react: { text: "⏳", key: mek.key } });
+
+      const downloadRes = await axios({
+        method: "post",
+        url: `${BACKEND_URL}/download/audio`,
+        data: { url: pending.url },
+        responseType: "arraybuffer",
+        timeout: 300000
+      });
+
+      const caption = buildJailbreakCaption({
+        info: pending.info,
+        author: pending.author,
+        ago: pending.ago,
+        pushName: pending.pushName,
+        emoji: "🎧"
+      });
+
+      const commonPayload = {
+        mimetype: "audio/mpeg",
+        caption,
+        mentions: [pending.sender],
+        contextInfo: {
+          ...jbContext,
+          externalAdReply: {
+            title: pending.info.title,
+            body: `Duration: ${pending.info.timestamp} | JAILBREAK AUDIO`,
+            thumbnailUrl: pending.thumbnail,
+            renderLargerThumbnail: true,
+            mediaType: 1,
+            sourceUrl: pending.url
+          }
+        }
+      };
+
+      if (selected === BUTTON_ID_DOCUMENT) {
+        await sock.sendMessage(from, {
+          document: Buffer.from(downloadRes.data),
+          fileName: `${pending.info.title}.mp3`,
+          ...commonPayload
+        }, { quoted: mek });
+      } else {
+        await sock.sendMessage(from, {
+          audio: Buffer.from(downloadRes.data),
+          ...commonPayload
+        }, { quoted: mek });
+      }
+
+      await sock.sendMessage(from, { react: { text: "✅", key: mek.key } });
+    } catch (e) {
+      console.error("SONG PICK ERROR:", e);
+      if (isBackendTimeout(e)) {
+        return reply("⫎ `Backend timeout while downloading. Please try again.` ⏱️");
+      }
+      const errMsg = e.response?.data?.error || e.message;
+      return reply(`⫎ *System Error:* \`${errMsg}\``);
     }
   }
 );
