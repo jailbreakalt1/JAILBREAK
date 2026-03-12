@@ -29,6 +29,10 @@ const jbContext = {
  * Helpers for song request flow
  */
 const isBackendTimeout = (err) => err?.code === "ECONNABORTED";
+const isLikelyImageResponse = (response) => {
+  const contentType = response?.headers?.["content-type"] || "";
+  return /^image\//i.test(contentType);
+};
 
 const safeUnlink = (filePath) => {
   if (!filePath) return;
@@ -124,9 +128,24 @@ JB({
         return reply("⫎ `Error: No results found in the database.` ❌");
       }
 
-      const thumbnailRes = await axios.get(stageA.thumbnail, { responseType: "arraybuffer", timeout: 15000 });
-      thumbPath = path.join(os.tmpdir(), `jb-song-${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`);
-      fs.writeFileSync(thumbPath, Buffer.from(thumbnailRes.data));
+      let thumbnailReady = false;
+      try {
+        const thumbnailRes = await axios.get(stageA.thumbnail, {
+          responseType: "arraybuffer",
+          timeout: 15000,
+          validateStatus: (status) => status >= 200 && status < 400
+        });
+
+        if (!isLikelyImageResponse(thumbnailRes)) {
+          throw new Error("Thumbnail response is not an image");
+        }
+
+        thumbPath = path.join(os.tmpdir(), `jb-song-${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`);
+        fs.writeFileSync(thumbPath, Buffer.from(thumbnailRes.data));
+        thumbnailReady = true;
+      } catch (thumbnailErr) {
+        console.warn("SONG THUMBNAIL FALLBACK:", thumbnailErr?.message || thumbnailErr);
+      }
 
       const requestKey = `${from}:${sender}`;
       setPendingSongRequest(requestKey, {
@@ -141,12 +160,20 @@ JB({
         { buttonId: `${prefix}song_pick ${BUTTON_ID_DOCUMENT}`, buttonText: { displayText: "DOCUMENT" }, type: 1 }
       ];
 
-      await sock.sendMessage(from, {
-        image: fs.readFileSync(thumbPath),
-        caption: "Choose an option:",
-        buttons: button_params,
-        footer: "☬ JAILBREAK HUB ☬"
-      }, { quoted: mek });
+      const pickerMessage = thumbnailReady
+        ? {
+            image: fs.readFileSync(thumbPath),
+            caption: "Choose an option:",
+            buttons: button_params,
+            footer: "☬ JAILBREAK HUB ☬"
+          }
+        : {
+            text: `*${stageA.info.title}*\nDuration: ${stageA.info.timestamp}\n\nChoose an option:`,
+            buttons: button_params,
+            footer: "☬ JAILBREAK HUB ☬"
+          };
+
+      await sock.sendMessage(from, pickerMessage, { quoted: mek });
 
       await sock.sendMessage(from, { react: { text: "✅", key: mek.key } });
 
