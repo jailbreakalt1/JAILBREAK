@@ -119,9 +119,7 @@ JB({
     let thumbPath = null;
     try {
       const q = args.join(" ");
-      if (!q) return reply("⧯ `I CAN DO A LOT OF THINGS, BUT CAN'T GUESS SONGS` \n\n `> Provide a song name or YouTube link.` 🎵");
-
-      await sock.sendMessage(from, { react: { text: "⏳", key: mek.key } });
+      if (!q) return reply("⧯ `I CAN DO A LOT OF THINGS, BUT CAN'T GUESS SONGS FROM YOUR HEAD` \n\n `> Provide a song name or YouTube link.` 🎵");
 
       const stageA = await stageAResolveSong(q);
       if (!stageA) {
@@ -163,7 +161,7 @@ JB({
       const pickerMessage = thumbnailReady
         ? {
             image: fs.readFileSync(thumbPath),
-            caption: "Choose an option:",
+            caption: "PRESS A BUTTON BELOW \n this menu will expire in 2 mins",
             buttons: button_params,
             footer: "☬ JAILBREAK HUB ☬"
           }
@@ -210,7 +208,7 @@ JB({
     const pending = pullPendingSongRequest(requestKey);
 
     if (!pending) {
-      return reply("⫎ `No pending selection found or it has expired. Please run .song again.` ⌛");
+      return reply("⫎ `Selection menu expired!! Please run` \n > .song \n `again` ⌛");
     }
 
     try {
@@ -288,7 +286,7 @@ JB({
   async (sock, mek, m, { from, args, reply }) => {
     try {
       const q = args.join(" ");
-      if (!q) return reply("⧯ `I CAN DO A LOT OF THINGS, BUT CAN'T GUESS SONGS` \n\n `> Provide a song name or YouTube link.` 🎵");
+      if (!q) return reply("⧯ `I CAN DO A LOT OF THINGS, BUT CAN'T GUESS SONGS FROM YOUR HEAD` \n\n `> Provide a song name or YouTube link.` 🎵");
 
       await sock.sendMessage(from, { react: { text: "⏳", key: mek.key } });
 
