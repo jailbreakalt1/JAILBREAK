@@ -150,6 +150,7 @@ JB({
       const author = ytsInfo ? ytsInfo.author.name : "Unknown Channel";
       const ago = ytsInfo ? ytsInfo.ago : "Recently";
       const sender = mek.key.participant || from;
+      const pushName = mek.pushName || "User";
 
       const downloadRes = await axios({
         method: 'post',
