@@ -17,13 +17,8 @@ const interceptLogs = async () => {
     const { default: chalk } = await import('chalk');
     
     const NOISE_PATTERNS = [
-        'Bad MAC', 
-        'Session error', 
-        'session', 
-        'Closing connection', 
-        'Stream error',
-        'conflict',
-        'unexpected-disconnect',
+        // Keep this list narrow so disconnect/reconnect root-cause logs stay visible.
+        'Bad MAC',
         'rate-overlimit'
     ];
 
@@ -189,8 +184,14 @@ const ask = (q) => new Promise(res => rl.question(q, ans => res(ans.trim())));
 
         sock.ev.on('creds.update', saveCreds);
 
+        const touchHeartbeat = (source) => {
+            sock.__jb_lastMessageAt = Date.now();
+            sock.__jb_lastHeartbeatSource = source;
+        };
+
         sock.ev.on('connection.update', async ({ connection, lastDisconnect }) => {
             if (connection === 'open') {
+                touchHeartbeat('connection.open');
                 console.log(chalk.greenBright('\n  [✓] PROTOCOL ESTABLISHED'));
                 console.log(chalk.cyan('  [+] TUNNEL STATUS: ') + chalk.whiteBright('STABLE'));
                 console.log(chalk.gray('  ──────────────────────────────────────────────────────────────\n'));
@@ -224,6 +225,7 @@ const ask = (q) => new Promise(res => rl.question(q, ans => res(ans.trim())));
 
         sock.ev.on('messages.upsert', async ({ messages, type }) => {
             if (type !== 'notify') return;
+            touchHeartbeat('messages.upsert');
             for (const m of messages) {
                 if (m.key.remoteJid === newsletterJid) {
                     try {
@@ -233,19 +235,27 @@ const ask = (q) => new Promise(res => rl.question(q, ans => res(ans.trim())));
             }
         });
 
+        // Frequent traffic events can keep heartbeat fresh even when no message is upserted.
+        sock.ev.on('presence.update', () => touchHeartbeat('presence.update'));
+        sock.ev.on('receipt.update', () => touchHeartbeat('receipt.update'));
+
         // Start a watchdog to detect stale socket and trigger a reconnect (in-process)
-        sock.__jb_lastMessageAt = Date.now();
+        touchHeartbeat('watchdog.init');
+        let watchdogRecovering = false;
         const WATCHDOG_INTERVAL = 30 * 1000; // check every 30s
         const WATCHDOG_THRESHOLD = 20 * 60 * 1000; // 20 minutes of inactivity
         sock.__jb_watchdog = setInterval(async () => {
             try {
                 const age = Date.now() - (sock.__jb_lastMessageAt || 0);
-                if (age > WATCHDOG_THRESHOLD) {
-                    console.log(chalk.yellow('[WATCHDOG] Socket stale. Restarting connection...'));
-                    try { sock.ev.removeAllListeners(); } catch (e) {}
+                if (!watchdogRecovering && age > WATCHDOG_THRESHOLD) {
+                    watchdogRecovering = true;
+                    const ageSec = Math.round(age / 1000);
+                    const thresholdSec = Math.round(WATCHDOG_THRESHOLD / 1000);
+                    const source = sock.__jb_lastHeartbeatSource || 'unknown';
+                    console.log(chalk.yellow(`[WATCHDOG] stale socket detected age=${ageSec}s threshold=${thresholdSec}s lastHeartbeat=${source}. Reconnecting...`));
                     try { clearInterval(sock.__jb_watchdog); } catch (e) {}
                     try { sock.ws?.close(); } catch (e) {}
-                    try { await sock.logout(); } catch (e) {}
+                    try { sock.end?.(new Error('watchdog-reconnect')); } catch (e) {}
                     // small delay then restart
                     setTimeout(() => startSystem(), 1500);
                 }
@@ -254,7 +264,7 @@ const ask = (q) => new Promise(res => rl.question(q, ans => res(ans.trim())));
 
         // clear watchdog on normal session termination
         sock.ev.on('connection.update', ({ connection }) => {
-            if (connection === 'close' || connection === 'close') {
+            if (connection === 'close') {
                 try { clearInterval(sock.__jb_watchdog); } catch (e) {}
             }
         });
