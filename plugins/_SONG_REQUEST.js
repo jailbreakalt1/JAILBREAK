@@ -152,14 +152,6 @@ JB({
         console.warn("SONG THUMBNAIL FALLBACK:", thumbnailErr?.message || thumbnailErr);
       }
 
-
-        thumbPath = path.join(os.tmpdir(), `jb-song-${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`);
-        fs.writeFileSync(thumbPath, Buffer.from(thumbnailRes.data));
-        thumbnailReady = true;
-      } catch (thumbnailErr) {
-        console.warn("SONG THUMBNAIL FALLBACK:", thumbnailErr?.message || thumbnailErr);
-      }
-
       const senderJid = resolveSenderJid(mek, sender);
       const requestKey = buildSongRequestKey({ from, senderJid });
       setPendingSongRequest(requestKey, {
@@ -196,11 +188,6 @@ JB({
             buttons: button_params,
             footer: "☬ JAILBREAK HUB ☬",
             contextInfo: pickerContextInfo
-
-            caption: "PRESS A BUTTON BELOW \n this menu will expire in 2 mins",
-            buttons: button_params,
-            footer: "☬ JAILBREAK HUB ☬"
-
           }
         : {
             text: `*${stageA.info.title}*\nDuration: ${stageA.info.timestamp}\n\nChoose an option:`,
@@ -219,12 +206,6 @@ JB({
           contextInfo: pickerContextInfo
         }, { quoted: mek });
       }
-
-            footer: "☬ JAILBREAK HUB ☬"
-          };
-
-      await sock.sendMessage(from, pickerMessage, { quoted: mek });
-
 
       await sock.sendMessage(from, { react: { text: "✅", key: mek.key } });
 
