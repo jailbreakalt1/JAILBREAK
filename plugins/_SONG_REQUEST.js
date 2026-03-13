@@ -7,6 +7,7 @@ const path = require("path");
 
 // Pulling backend URL from .env with a fallback to the internal IP
 const BACKEND_URL = process.env.BACKEND_URL || "http://172.18.0.179:5000"; 
+const IMG_BACKEND_URL = process.env.IMG_BACKEND_URL || "https://backend-three-pi-j2o7ert13i.vercel.app";
 const SONG_REQUEST_CHANNEL_LINK = "https://whatsapp.com/channel/0029VagJIAr3bbVzV70jSU1p";
 const AI_LOGO_URL = "https://files.catbox.moe/s80m7e.png";
 const PENDING_SONG_TTL_MS = 2 * 60 * 1000;
@@ -508,7 +509,7 @@ JB({
       await sock.sendMessage(from, { react: { text: "⏳", key: mek.key } });
       await reply("⎆ `Querying Visual Database...` 🌐");
 
-      const response = await axios.post(`${BACKEND_URL}/img_search`, { query: q }, { timeout: 20000 });
+      const response = await axios.post(`${IMG_BACKEND_URL}/img_search`, { query: q }, { timeout: 20000 });
       const images = response.data.images;
 
       if (!images || images.length === 0) {
@@ -584,7 +585,7 @@ JB({
     } catch (e) {
       console.error("IMG ERROR:", e);
       const errMsg = e.response?.data?.error || e.message;
-      reply(`⫎ *Error:* \`${errMsg}\`\n\n> ◈ URL: ${BACKEND_URL}`);
+      reply(`⫎ *Error:* \`${errMsg}\`\n\n> ◈ URL: ${IMG_BACKEND_URL}`);
       await sock.sendMessage(from, { react: { text: "❌", key: mek.key } });
     }
   }
