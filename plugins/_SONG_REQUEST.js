@@ -35,8 +35,10 @@ const isLikelyImageResponse = (response) => {
   const contentType = response?.headers?.["content-type"] || "";
   return /^image\//i.test(contentType);
 };
+
 const resolveSenderJid = (mek, senderFromCtx) => mek?.key?.participant || mek?.key?.remoteJid || senderFromCtx || "";
 const buildSongRequestKey = ({ from, senderJid }) => `${from}:${senderJid}`;
+
 
 const safeUnlink = (filePath) => {
   if (!filePath) return;
@@ -123,9 +125,7 @@ JB({
     let thumbPath = null;
     try {
       const q = args.join(" ");
-      if (!q) return reply("⧯ `I CAN DO A LOT OF THINGS, BUT CAN'T GUESS SONGS` \n\n `> Provide a song name or YouTube link.` 🎵");
-
-      await sock.sendMessage(from, { react: { text: "⏳", key: mek.key } });
+      if (!q) return reply("⧯ `I CAN DO A LOT OF THINGS, BUT CAN'T GUESS SONGS FROM YOUR HEAD` \n\n `> Provide a song name or YouTube link.` 🎵");
 
       const stageA = await stageAResolveSong(q);
       if (!stageA) {
@@ -151,6 +151,14 @@ JB({
         console.warn("SONG THUMBNAIL FALLBACK:", thumbnailErr?.message || thumbnailErr);
       }
 
+
+        thumbPath = path.join(os.tmpdir(), `jb-song-${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`);
+        fs.writeFileSync(thumbPath, Buffer.from(thumbnailRes.data));
+        thumbnailReady = true;
+      } catch (thumbnailErr) {
+        console.warn("SONG THUMBNAIL FALLBACK:", thumbnailErr?.message || thumbnailErr);
+      }
+
       const senderJid = resolveSenderJid(mek, sender);
       const requestKey = buildSongRequestKey({ from, senderJid });
       setPendingSongRequest(requestKey, {
@@ -165,6 +173,7 @@ JB({
         { buttonId: `${prefix}song_pick ${BUTTON_ID_DOCUMENT}`, buttonText: { displayText: "DOCUMENT" }, type: 1 },
         { buttonId: `${prefix}song_pick ${BUTTON_ID_VIDEO}`, buttonText: { displayText: "VIDEO" }, type: 1 }
       ];
+
 
       const pickerContextInfo = {
         ...jbContext,
@@ -182,13 +191,20 @@ JB({
         ? {
             image: fs.readFileSync(thumbPath),
             caption: "Choose an option:",
+
             buttons: button_params,
             footer: "☬ JAILBREAK HUB ☬",
             contextInfo: pickerContextInfo
+
+            caption: "PRESS A BUTTON BELOW \n this menu will expire in 2 mins",
+            buttons: button_params,
+            footer: "☬ JAILBREAK HUB ☬"
+
           }
         : {
             text: `*${stageA.info.title}*\nDuration: ${stageA.info.timestamp}\n\nChoose an option:`,
             buttons: button_params,
+
             footer: "☬ JAILBREAK HUB ☬",
             contextInfo: pickerContextInfo
           };
@@ -202,6 +218,12 @@ JB({
           contextInfo: pickerContextInfo
         }, { quoted: mek });
       }
+
+            footer: "☬ JAILBREAK HUB ☬"
+          };
+
+      await sock.sendMessage(from, pickerMessage, { quoted: mek });
+
 
       await sock.sendMessage(from, { react: { text: "✅", key: mek.key } });
 
@@ -239,7 +261,7 @@ JB({
     const pending = pullPendingSongRequest(requestKey);
 
     if (!pending) {
-      return reply("⫎ `No pending selection found or it has expired. Please run .song again.` ⌛");
+      return reply("⫎ `Selection menu expired!! Please run` \n > .song \n `again` ⌛");
     }
 
     try {
@@ -294,6 +316,25 @@ JB({
             contextInfo: videoPayload.contextInfo
           }, { quoted: mek });
         }
+
+
+        await sock.sendMessage(from, {
+          video: Buffer.from(videoRes.data),
+          mimetype: "video/mp4",
+          caption: videoCaption,
+          mentions: [pending.sender],
+          contextInfo: {
+            ...jbContext,
+            externalAdReply: {
+              title: pending.info.title,
+              body: `Duration: ${pending.info.timestamp} | JAILBREAK VIDEO`,
+              thumbnailUrl: pending.thumbnail,
+              renderLargerThumbnail: true,
+              mediaType: 1,
+              sourceUrl: pending.url
+            }
+          }
+        }, { quoted: mek });
       } else {
         const downloadRes = await axios({
           method: "post",
@@ -314,13 +355,19 @@ JB({
         const commonPayload = {
           mimetype: "audio/mpeg",
           caption,
+
           mentions: [pending.senderJid],
+
+          mentions: [pending.sender],
+
           contextInfo: {
             ...jbContext,
             externalAdReply: {
               title: pending.info.title,
               body: `Duration: ${pending.info.timestamp} | JAILBREAK AUDIO`,
+
               thumbnailUrl: pending.thumbnail || AI_LOGO_URL,
+
               renderLargerThumbnail: true,
               mediaType: 1,
               sourceUrl: pending.url
@@ -368,7 +415,7 @@ JB({
   async (sock, mek, m, { from, args, reply }) => {
     try {
       const q = args.join(" ");
-      if (!q) return reply("⧯ `I CAN DO A LOT OF THINGS, BUT CAN'T GUESS SONGS` \n\n `> Provide a song name or YouTube link.` 🎵");
+      if (!q) return reply("⧯ `I CAN DO A LOT OF THINGS, BUT CAN'T GUESS SONGS FROM YOUR HEAD` \n\n `> Provide a song name or YouTube link.` 🎵");
 
       await sock.sendMessage(from, { react: { text: "⏳", key: mek.key } });
 

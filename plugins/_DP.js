@@ -39,8 +39,12 @@ JB({
   filename: __filename
 }, async (sock, mek, m, { from, sender, reply }) => {
   try {
+
     const senderJid = mek?.key?.participant || mek?.key?.remoteJid || sender || '';
     if (!isOwnerSender(senderJid)) {
+
+    if (!isOwnerSender(sender)) {
+
       return reply('⫎ `Owner only command.` ❌');
     }
 
