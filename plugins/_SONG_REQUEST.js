@@ -8,9 +8,11 @@ const path = require("path");
 // Pulling backend URL from .env with a fallback to the internal IP
 const BACKEND_URL = process.env.BACKEND_URL || "http://172.18.0.179:5000"; 
 const SONG_REQUEST_CHANNEL_LINK = "https://whatsapp.com/channel/0029VagJIAr3bbVzV70jSU1p";
+const AI_LOGO_URL = "https://files.catbox.moe/s80m7e.png";
 const PENDING_SONG_TTL_MS = 2 * 60 * 1000;
 const BUTTON_ID_AUDIO = "play_audio";
 const BUTTON_ID_DOCUMENT = "play_document";
+const BUTTON_ID_VIDEO = "play_video";
 const pendingSongRequests = new Map();
 //=======
 const MAX_IMG_CARDS = 5;
@@ -29,6 +31,12 @@ const jbContext = {
  * Helpers for song request flow
  */
 const isBackendTimeout = (err) => err?.code === "ECONNABORTED";
+const isLikelyImageResponse = (response) => {
+  const contentType = response?.headers?.["content-type"] || "";
+  return /^image\//i.test(contentType);
+};
+const resolveSenderJid = (mek, senderFromCtx) => mek?.key?.participant || mek?.key?.remoteJid || senderFromCtx || "";
+const buildSongRequestKey = ({ from, senderJid }) => `${from}:${senderJid}`;
 
 const safeUnlink = (filePath) => {
   if (!filePath) return;
@@ -96,7 +104,7 @@ const stageAResolveSong = async (query) => {
     info,
     author: ytsInfo?.author?.name || "Unknown Artist",
     ago: ytsInfo?.ago || "Recently",
-    thumbnail: info.thumbnail || ytsInfo?.thumbnail || "https://files.catbox.moe/s80m7e.png"
+    thumbnail: info.thumbnail || ytsInfo?.thumbnail || AI_LOGO_URL
   };
 };
 
@@ -124,29 +132,76 @@ JB({
         return reply("⫎ `Error: No results found in the database.` ❌");
       }
 
-      const thumbnailRes = await axios.get(stageA.thumbnail, { responseType: "arraybuffer", timeout: 15000 });
-      thumbPath = path.join(os.tmpdir(), `jb-song-${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`);
-      fs.writeFileSync(thumbPath, Buffer.from(thumbnailRes.data));
+      let thumbnailReady = false;
+      try {
+        const thumbnailRes = await axios.get(stageA.thumbnail, {
+          responseType: "arraybuffer",
+          timeout: 15000,
+          validateStatus: (status) => status >= 200 && status < 400
+        });
 
-      const requestKey = `${from}:${sender}`;
+        if (!isLikelyImageResponse(thumbnailRes)) {
+          throw new Error("Thumbnail response is not an image");
+        }
+
+        thumbPath = path.join(os.tmpdir(), `jb-song-${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`);
+        fs.writeFileSync(thumbPath, Buffer.from(thumbnailRes.data));
+        thumbnailReady = true;
+      } catch (thumbnailErr) {
+        console.warn("SONG THUMBNAIL FALLBACK:", thumbnailErr?.message || thumbnailErr);
+      }
+
+      const senderJid = resolveSenderJid(mek, sender);
+      const requestKey = buildSongRequestKey({ from, senderJid });
       setPendingSongRequest(requestKey, {
         from,
-        sender,
+        senderJid,
         pushName: mek.pushName || "User",
         ...stageA
       });
 
       const button_params = [
         { buttonId: `${prefix}song_pick ${BUTTON_ID_AUDIO}`, buttonText: { displayText: "AUDIO" }, type: 1 },
-        { buttonId: `${prefix}song_pick ${BUTTON_ID_DOCUMENT}`, buttonText: { displayText: "DOCUMENT" }, type: 1 }
+        { buttonId: `${prefix}song_pick ${BUTTON_ID_DOCUMENT}`, buttonText: { displayText: "DOCUMENT" }, type: 1 },
+        { buttonId: `${prefix}song_pick ${BUTTON_ID_VIDEO}`, buttonText: { displayText: "VIDEO" }, type: 1 }
       ];
 
-      await sock.sendMessage(from, {
-        image: fs.readFileSync(thumbPath),
-        caption: "Choose an option:",
-        buttons: button_params,
-        footer: "☬ JAILBREAK HUB ☬"
-      }, { quoted: mek });
+      const pickerContextInfo = {
+        ...jbContext,
+        externalAdReply: {
+          title: stageA.info.title,
+          body: `Duration: ${stageA.info.timestamp} | JAILBREAK AI`,
+          thumbnailUrl: stageA.thumbnail || AI_LOGO_URL,
+          renderLargerThumbnail: true,
+          mediaType: 1,
+          sourceUrl: SONG_REQUEST_CHANNEL_LINK
+        }
+      };
+
+      const pickerMessage = thumbnailReady
+        ? {
+            image: fs.readFileSync(thumbPath),
+            caption: "Choose an option:",
+            buttons: button_params,
+            footer: "☬ JAILBREAK HUB ☬",
+            contextInfo: pickerContextInfo
+          }
+        : {
+            text: `*${stageA.info.title}*\nDuration: ${stageA.info.timestamp}\n\nChoose an option:`,
+            buttons: button_params,
+            footer: "☬ JAILBREAK HUB ☬",
+            contextInfo: pickerContextInfo
+          };
+
+      try {
+        await sock.sendMessage(from, pickerMessage, { quoted: mek });
+      } catch (pickerErr) {
+        console.warn("SONG PICKER BUTTON FALLBACK:", pickerErr?.message || pickerErr);
+        await sock.sendMessage(from, {
+          text: `*${stageA.info.title}*\nChoose format by replying with one of:\n• ${prefix}song_pick ${BUTTON_ID_AUDIO}\n• ${prefix}song_pick ${BUTTON_ID_DOCUMENT}\n• ${prefix}song_pick ${BUTTON_ID_VIDEO}`,
+          contextInfo: pickerContextInfo
+        }, { quoted: mek });
+      }
 
       await sock.sendMessage(from, { react: { text: "✅", key: mek.key } });
 
@@ -175,11 +230,12 @@ JB({
   },
   async (sock, mek, m, { from, sender, args, reply }) => {
     const selected = args[0];
-    if (![BUTTON_ID_AUDIO, BUTTON_ID_DOCUMENT].includes(selected)) {
+    if (![BUTTON_ID_AUDIO, BUTTON_ID_DOCUMENT, BUTTON_ID_VIDEO].includes(selected)) {
       return reply("⫎ `Invalid button payload received. Please run .song again.` ❌");
     }
 
-    const requestKey = `${from}:${sender}`;
+    const senderJid = resolveSenderJid(mek, sender);
+    const requestKey = buildSongRequestKey({ from, senderJid });
     const pending = pullPendingSongRequest(requestKey);
 
     if (!pending) {
@@ -189,50 +245,101 @@ JB({
     try {
       await sock.sendMessage(from, { react: { text: "⏳", key: mek.key } });
 
-      const downloadRes = await axios({
-        method: "post",
-        url: `${BACKEND_URL}/download/audio`,
-        data: { url: pending.url },
-        responseType: "arraybuffer",
-        timeout: 300000
-      });
+      if (selected === BUTTON_ID_VIDEO) {
+        const videoRes = await axios({
+          method: "post",
+          url: `${BACKEND_URL}/download/video`,
+          data: { url: pending.url },
+          responseType: "arraybuffer",
+          timeout: 600000
+        });
 
-      const caption = buildJailbreakCaption({
-        info: pending.info,
-        author: pending.author,
-        ago: pending.ago,
-        pushName: pending.pushName,
-        emoji: "🎧"
-      });
+        const videoCaption = buildJailbreakCaption({
+          info: pending.info,
+          author: pending.author,
+          ago: pending.ago,
+          pushName: pending.pushName,
+          emoji: "🎬"
+        });
 
-      const commonPayload = {
-        mimetype: "audio/mpeg",
-        caption,
-        mentions: [pending.sender],
-        contextInfo: {
-          ...jbContext,
-          externalAdReply: {
-            title: pending.info.title,
-            body: `Duration: ${pending.info.timestamp} | JAILBREAK AUDIO`,
-            thumbnailUrl: pending.thumbnail,
-            renderLargerThumbnail: true,
-            mediaType: 1,
-            sourceUrl: pending.url
+        const videoPayload = {
+          video: Buffer.from(videoRes.data),
+          mimetype: "video/mp4",
+          fileName: `${pending.info.title}.mp4`,
+          caption: videoCaption,
+          mentions: [pending.senderJid],
+          contextInfo: {
+            ...jbContext,
+            externalAdReply: {
+              title: pending.info.title,
+              body: `Duration: ${pending.info.timestamp} | JAILBREAK VIDEO`,
+              thumbnailUrl: pending.thumbnail || AI_LOGO_URL,
+              renderLargerThumbnail: true,
+              mediaType: 1,
+              sourceUrl: pending.url
+            }
           }
-        }
-      };
+        };
 
-      if (selected === BUTTON_ID_DOCUMENT) {
-        await sock.sendMessage(from, {
-          document: Buffer.from(downloadRes.data),
-          fileName: `${pending.info.title}.mp3`,
-          ...commonPayload
-        }, { quoted: mek });
+        try {
+          await sock.sendMessage(from, videoPayload, { quoted: mek });
+        } catch (videoSendErr) {
+          console.warn("SONG VIDEO FALLBACK DOCUMENT:", videoSendErr?.message || videoSendErr);
+          await sock.sendMessage(from, {
+            document: Buffer.from(videoRes.data),
+            mimetype: "video/mp4",
+            fileName: `${pending.info.title}.mp4`,
+            caption: `${videoCaption}\n\n⚠️ Video preview unsupported on this client; sent as MP4 file.`,
+            mentions: [pending.senderJid],
+            contextInfo: videoPayload.contextInfo
+          }, { quoted: mek });
+        }
       } else {
-        await sock.sendMessage(from, {
-          audio: Buffer.from(downloadRes.data),
-          ...commonPayload
-        }, { quoted: mek });
+        const downloadRes = await axios({
+          method: "post",
+          url: `${BACKEND_URL}/download/audio`,
+          data: { url: pending.url },
+          responseType: "arraybuffer",
+          timeout: 300000
+        });
+
+        const caption = buildJailbreakCaption({
+          info: pending.info,
+          author: pending.author,
+          ago: pending.ago,
+          pushName: pending.pushName,
+          emoji: "🎧"
+        });
+
+        const commonPayload = {
+          mimetype: "audio/mpeg",
+          caption,
+          mentions: [pending.senderJid],
+          contextInfo: {
+            ...jbContext,
+            externalAdReply: {
+              title: pending.info.title,
+              body: `Duration: ${pending.info.timestamp} | JAILBREAK AUDIO`,
+              thumbnailUrl: pending.thumbnail || AI_LOGO_URL,
+              renderLargerThumbnail: true,
+              mediaType: 1,
+              sourceUrl: pending.url
+            }
+          }
+        };
+
+        if (selected === BUTTON_ID_DOCUMENT) {
+          await sock.sendMessage(from, {
+            document: Buffer.from(downloadRes.data),
+            fileName: `${pending.info.title}.mp3`,
+            ...commonPayload
+          }, { quoted: mek });
+        } else {
+          await sock.sendMessage(from, {
+            audio: Buffer.from(downloadRes.data),
+            ...commonPayload
+          }, { quoted: mek });
+        }
       }
 
       await sock.sendMessage(from, { react: { text: "✅", key: mek.key } });
