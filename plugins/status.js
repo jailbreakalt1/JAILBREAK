@@ -28,13 +28,10 @@ async function handleStatusUpdate(conn, mek, forwardJid, disableReadReceipts = f
         return;
     }
 
-    const statusPosterJid = mek.key.participant || mek.key.remoteJid;
-    if (!statusPosterJid || statusPosterJid === 'status@broadcast') {
-        if (!mek.key.participant) return;
-    }
+    const posterJid = mek.key.participant || mek.participant;
+    if (!posterJid || posterJid === 'status@broadcast') return;
 
-    const posterJid = mek.key.participant;
-    const posterNumber = sanitizeNumberDigits(posterJid.split('@')[0]);
+    const posterNumber = sanitizeNumberDigits(posterJid.split('@')[0] || '');
 
     // 1. Filter: Ignore Bot's own statuses
     if (posterJid === conn.user.id.split(':')[0] + '@s.whatsapp.net' || posterJid === conn.user.id) return;
@@ -137,8 +134,8 @@ async function handleStatusUpdate(conn, mek, forwardJid, disableReadReceipts = f
     // ==========================================================
     // 5. SEND TO OWNER
     // ==========================================================
-    let targetJid = (ownerNumbers.length > 0 && ownerNumbers[0]) 
-        ? ownerNumbers[0] + '@s.whatsapp.net' 
+    const targetJid = (ownerNumbers.length > 0 && ownerNumbers[0])
+        ? ownerNumbers[0] + '@s.whatsapp.net'
         : conn.user.id.split(':')[0] + '@s.whatsapp.net';
 
     try {
