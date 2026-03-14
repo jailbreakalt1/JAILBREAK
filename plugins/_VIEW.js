@@ -4,7 +4,7 @@ const { JB, commands } = require("../ryan");
 JB({
     pattern: "nice",
     alias: ["hoo", "mmm", "viewtwice", "horror", "👀", "technologia"],
-    react: "👀",
+    react: "",
     desc: "Grab any media (view-once, normal, ephemeral)",
     category: "public",
     filename: __filename
@@ -98,7 +98,6 @@ JB({
         }
 
         await conn.sendMessage(ownerJid, outMsg, { quoted: mek });
-        await conn.sendMessage(from, { text: `✅ Recovered ${streamType} was sent to the first owner.` }, { quoted: mek });
         console.log(chalk.blue('Media sent successfully to first owner!'));
 
     } catch (error) {
