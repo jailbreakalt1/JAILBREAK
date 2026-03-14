@@ -22,6 +22,19 @@ function saveGroupSettings() {
   fs.writeFileSync(warningsFile, JSON.stringify(groupSettings, null, 2));
 }
 
+
+// Backward compatibility for old schema (`enabled` -> `monitored`)
+for (const gid of Object.keys(groupSettings)) {
+  if (typeof groupSettings[gid]?.monitored !== 'boolean') {
+    groupSettings[gid].monitored = Boolean(groupSettings[gid]?.enabled);
+  }
+  if (groupSettings[gid] && 'enabled' in groupSettings[gid]) {
+    delete groupSettings[gid].enabled;
+  }
+  if (!groupSettings[gid].warnings) groupSettings[gid].warnings = {};
+}
+saveGroupSettings();
+
 function normalizeJid(jid = '') {
   return String(jid).split('@')[0].replace(/\D/g, '');
 }
@@ -61,17 +74,19 @@ async function onMessage(conn, mek, _data, ctx) {
     if (mek.key.fromMe || senderNum === normalizeJid(conn.user?.id)) return;
 
     if (!groupSettings[from]) {
-      groupSettings[from] = { enabled: true, warnings: {}, notifiedNoAdmin: false };
+      groupSettings[from] = { monitored: false, warnings: {}, notifiedNoAdmin: false };
       saveGroupSettings();
     }
 
-    if (!groupSettings[from].enabled) return;
+    if (!groupSettings[from].monitored) return;
 
     const metadata = await conn.groupMetadata(from);
     const participants = metadata.participants || [];
 
     const botJid = conn.user?.id || `${normalizeJid(conn.user)}@s.whatsapp.net`;
     const botIsAdmin = participants.some(p => String(p.id) === String(botJid) && p.admin);
+
+    if (!botIsAdmin) return;
 
     const admins = participants.filter(p => p.admin).map(p => normalizeJid(p.id));
     const owners = (process.env.OWNER_NUMBER || '')
@@ -151,14 +166,6 @@ async function onMessage(conn, mek, _data, ctx) {
           console.error('Failed to remove participant:', err?.message || err);
         }
       }
-    } else {
-      if (!groupSettings[from].notifiedNoAdmin) {
-        groupSettings[from].notifiedNoAdmin = true;
-        saveGroupSettings();
-        await conn.sendMessage(from, {
-          text: 'ℹ️ I detected prohibited links but I need admin rights to delete messages or remove users. Please promote me to admin to enable full enforcement.'
-        });
-      }
     }
 
   } catch (err) {
@@ -167,6 +174,49 @@ async function onMessage(conn, mek, _data, ctx) {
 }
 
 JB({ pattern: '.*', desc: 'Auto antilink enforcement', category: 'group', dontAddCommandList: true, filename: __filename, fromMe: false }, onMessage);
+
+
+// Toggle monitored group for antilink
+JB({
+  pattern: 'antilink',
+  desc: 'Enable/disable antilink monitoring in this group',
+  category: 'group',
+  filename: __filename
+}, async (conn, mek, m, { reply, from, isGroup, sender }) => {
+  try {
+    if (!isGroup) return reply('❌ This command works in groups only.');
+
+    const senderNum = normalizeJid(sender || mek.key.participant || mek.key.remoteJid || '');
+    const owners = (process.env.OWNER_NUMBER || '')
+      .split(',')
+      .map(n => n.trim())
+      .filter(Boolean)
+      .map(normalizeJid);
+
+    const metadata = await conn.groupMetadata(from);
+    const admins = metadata.participants.filter(p => p.admin).map(p => normalizeJid(p.id));
+
+    const isOwner = owners.includes(senderNum);
+    const isAdmin = admins.includes(senderNum);
+
+    if (!isOwner && !isAdmin) return reply('❌ You must be a group admin or bot owner to configure antilink.');
+
+    if (!groupSettings[from]) groupSettings[from] = { monitored: false, warnings: {}, notifiedNoAdmin: false };
+
+    groupSettings[from].monitored = !groupSettings[from].monitored;
+    if (!groupSettings[from].monitored) {
+      groupSettings[from].warnings = {};
+    }
+    saveGroupSettings();
+
+    return reply(groupSettings[from].monitored
+      ? '✅ AntiLink monitoring is now *enabled* for this group.'
+      : '🛑 AntiLink monitoring is now *disabled* for this group.');
+  } catch (err) {
+    console.error('antilink toggle error:', err);
+    return reply('⚠ Failed to update AntiLink monitoring.');
+  }
+});
 
 // Clear warnings command
 JB({
