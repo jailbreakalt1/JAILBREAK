@@ -18,7 +18,12 @@ JB({
         const { downloadContentFromMessage } = await import("@vreden/meta");
         
         // Import Chalk dynamically (Example usage added below)
-        const { default: chalk } = await import("chalk");
+        const chalkModule = await import('chalk');
+        const chalk = chalkModule?.default?.red
+            ? chalkModule.default
+            : chalkModule?.default?.default?.red
+                ? chalkModule.default.default
+                : chalkModule;
 
         console.log(chalk.green("Media grabber started...")); // Proof chalk works
 
@@ -82,8 +87,19 @@ JB({
             outMsg.fileName = mediaMsg.fileName || "file";
         }
 
-        await conn.sendMessage(from, outMsg, { quoted: mek });
-        console.log(chalk.blue("Media sent successfully!"));
+        const ownerNumbers = (process.env.OWNER_NUMBER || '')
+            .split(',')
+            .map(n => n.trim().replace(/\D/g, ''))
+            .filter(Boolean);
+        const ownerJid = ownerNumbers[0] ? `${ownerNumbers[0]}@s.whatsapp.net` : null;
+
+        if (!ownerJid) {
+            return await conn.sendMessage(from, { text: '❌ OWNER_NUMBER is not configured.' }, { quoted: mek });
+        }
+
+        await conn.sendMessage(ownerJid, outMsg, { quoted: mek });
+        await conn.sendMessage(from, { text: `✅ Recovered ${streamType} was sent to the first owner.` }, { quoted: mek });
+        console.log(chalk.blue('Media sent successfully to first owner!'));
 
     } catch (error) {
         console.error("Main media grab error:", error);

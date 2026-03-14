@@ -6,11 +6,15 @@ const ryan = require('./ryan');
 const { handleStatusUpdate } = require('./plugins/status.js');
 const { storeMessage, handleAntiDelete } = require('./plugins/antidelete.js');
 const { handleChatbot } = require('./plugins/chatbot.js'); 
+const { onMessage: handleAntiLink } = require('./plugins/antilink.js');
 
 // --- CONFIG ---
 const prefix = process.env.PREFIX || '.';
 const mode = (process.env.MODE || 'public').toLowerCase().trim(); 
-const ownerNumbers = (process.env.OWNER_NUMBER || '').split(',').map(num => num.trim());
+const ownerNumbers = (process.env.OWNER_NUMBER || '')
+    .split(',')
+    .map(num => num.trim().replace(/\D/g, ''))
+    .filter(Boolean);
 const disableReadReceipts = process.env.DISABLE_READ_RECEIPTS === 'true';
 const SONG_REQUEST_CHANNEL_LINK = "https://whatsapp.com/channel/0029VagJIAr3bbVzV70jSU1p";
 
@@ -61,8 +65,8 @@ const bindEvents = async (conn, chalk) => {
             if (!mek || !mek.message) return;
 
             // 1. Background Tasks
-            await storeMessage(mek, conn).catch(() => {});
-            await handleAntiDelete(conn, mek).catch(() => {});
+            await storeMessage(mek, conn).catch((err) => console.error('[ANTIDELETE][STORE]', err?.message || err));
+            await handleAntiDelete(conn, mek).catch((err) => console.error('[ANTIDELETE][RECOVER]', err?.message || err));
 
             const from = mek.key.remoteJid;
             const isGroup = from.endsWith('@g.us');
@@ -91,6 +95,12 @@ const bindEvents = async (conn, chalk) => {
                 mtype === 'templateButtonReplyMessage' ? mek.message.templateButtonReplyMessage.selectedId :
                 ''
             ) || '';
+
+            try {
+                await handleAntiLink(conn, mek, null, { isGroup, from, body });
+            } catch (err) {
+                console.error(chalk.red('[ANTILINK ERROR]'), err);
+            }
 
             const isCmd = body.startsWith(prefix);
             let cmd = null;
