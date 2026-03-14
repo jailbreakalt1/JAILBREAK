@@ -42,9 +42,6 @@ JB({
 
     const senderJid = mek?.key?.participant || mek?.key?.remoteJid || sender || '';
     if (!isOwnerSender(senderJid)) {
-
-    if (!isOwnerSender(sender)) {
-
       return reply('⫎ `Owner only command.` ❌');
     }
 

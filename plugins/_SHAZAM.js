@@ -72,7 +72,7 @@ JB({
             return reply('⚠️ Internal error loading media tools.');
         }
 
-        const { downloadMediaMessage } = baileys;
+        const { downloadMediaMessage, proto, generateWAMessageFromContent } = baileys;
 
         // ─── MEDIA DETECTION ───
         let mediaMessage = null;
@@ -135,19 +135,65 @@ JB({
 
 > ☬ *JAILBREAK HUB* ☬`;
 
-        await conn.sendMessage(from, {
-            text: header + body,
-            contextInfo: {
-                ...jbContext,
-                externalAdReply: {
-                    title: `INTERCEPTED: ${title.toUpperCase()}`,
-                    body: `Artist: ${artists}`,
-                    mediaType: 1,
-                    thumbnailUrl: thumbnail,
-                    sourceUrl: SONG_REQUEST_CHANNEL_LINK
-                }
+        const responseText = header + body;
+        const copyPayload = `${artists} - ${title}`;
+
+        const contextInfo = {
+            ...jbContext,
+            externalAdReply: {
+                title: `INTERCEPTED: ${title.toUpperCase()}`,
+                body: `Artist: ${artists}`,
+                mediaType: 1,
+                thumbnailUrl: thumbnail,
+                sourceUrl: SONG_REQUEST_CHANNEL_LINK
             }
-        }, { quoted: mek });
+        };
+
+        let sentInteractive = false;
+        if (proto && generateWAMessageFromContent) {
+            try {
+                const msg = generateWAMessageFromContent(from, {
+                    viewOnceMessage: {
+                        message: {
+                            interactiveMessage: proto.Message.InteractiveMessage.create({
+                                body: proto.Message.InteractiveMessage.Body.create({
+                                    text: responseText
+                                }),
+                                footer: proto.Message.InteractiveMessage.Footer.create({
+                                    text: 'Tap the button to copy artist + song'
+                                }),
+                                nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({
+                                    buttons: [
+                                        {
+                                            name: 'cta_copy',
+                                            buttonParamsJson: JSON.stringify({
+                                                display_text: 'Copy Artist + Song',
+                                                id: 'copy_song_artist',
+                                                copy_code: copyPayload
+                                            })
+                                        }
+                                    ]
+                                })
+                            })
+                        }
+                    }
+                }, { quoted: mek, userJid: conn.user?.id });
+
+                await conn.relayMessage(from, msg.message, { messageId: msg.key.id });
+                sentInteractive = true;
+            } catch (interactiveErr) {
+                console.warn('[SHAZAM COPY BUTTON FALLBACK]', interactiveErr?.message || interactiveErr);
+            }
+        }
+
+        if (!sentInteractive) {
+            await conn.sendMessage(from, {
+                text: `${responseText}
+
+*Copy:* \`${copyPayload}\``,
+                contextInfo
+            }, { quoted: mek });
+        }
 
         await conn.sendMessage(from, { react: { text: '✅', key: mek.key } });
 
