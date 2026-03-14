@@ -14,7 +14,12 @@ const newsletterJid = "120363424536255731@newsletter";
 
 // --- 🔇 GLOBAL CONSOLE SILENCER (REVAMPED) 🔇 ---
 const interceptLogs = async () => {
-    const { default: chalk } = await import('chalk');
+    const chalkModule = await import('chalk');
+    const chalk = chalkModule?.default?.red
+        ? chalkModule.default
+        : chalkModule?.default?.default?.red
+            ? chalkModule.default.default
+            : chalkModule;
     
     const NOISE_PATTERNS = [
         // Keep this list narrow so disconnect/reconnect root-cause logs stay visible.
@@ -189,6 +194,11 @@ const ask = (q) => new Promise(res => rl.question(q, ans => res(ans.trim())));
             sock.__jb_lastHeartbeatSource = source;
         };
 
+        const isSocketOpen = () => {
+            const readyState = sock?.ws?.readyState;
+            return readyState === 1 || readyState === sock?.ws?.OPEN;
+        };
+
         sock.ev.on('connection.update', async ({ connection, lastDisconnect }) => {
             if (connection === 'open') {
                 touchHeartbeat('connection.open');
@@ -218,6 +228,7 @@ const ask = (q) => new Promise(res => rl.question(q, ans => res(ans.trim())));
                     fs.rmSync(authDir, { recursive: true, force: true });
                     process.exit(0);
                 } else {
+                    console.log(chalk.yellow(`[CONNECTION] closed (code=${code ?? 'unknown'}) -> scheduling reconnect in 3s`));
                     setTimeout(() => startSystem(), 3000);
                 }
             }
@@ -238,6 +249,7 @@ const ask = (q) => new Promise(res => rl.question(q, ans => res(ans.trim())));
         // Frequent traffic events can keep heartbeat fresh even when no message is upserted.
         sock.ev.on('presence.update', () => touchHeartbeat('presence.update'));
         sock.ev.on('receipt.update', () => touchHeartbeat('receipt.update'));
+        sock.ev.on('message-receipt.update', () => touchHeartbeat('message-receipt.update'));
 
         // Start a watchdog to detect stale socket and trigger a reconnect (in-process)
         touchHeartbeat('watchdog.init');
@@ -254,8 +266,12 @@ const ask = (q) => new Promise(res => rl.question(q, ans => res(ans.trim())));
                     const source = sock.__jb_lastHeartbeatSource || 'unknown';
                     console.log(chalk.yellow(`[WATCHDOG] stale socket detected age=${ageSec}s threshold=${thresholdSec}s lastHeartbeat=${source}. Reconnecting...`));
                     try { clearInterval(sock.__jb_watchdog); } catch (e) {}
-                    try { sock.ws?.close(); } catch (e) {}
-                    try { sock.end?.(new Error('watchdog-reconnect')); } catch (e) {}
+                    if (!isSocketOpen()) {
+                        console.log(chalk.yellow('[WATCHDOG] ws already closed, skipping explicit socket close/end.'));
+                    } else {
+                        try { sock.ws?.close(); } catch (e) {}
+                        try { sock.end?.(new Error('watchdog-reconnect')); } catch (e) {}
+                    }
                     // small delay then restart
                     setTimeout(() => startSystem(), 1500);
                 }
