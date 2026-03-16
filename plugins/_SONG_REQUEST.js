@@ -8,7 +8,7 @@ const path = require("path");
 const IMG_BACKEND_URL = process.env.IMG_BACKEND_URL || "https://backend-three-pi-j2o7ert13i.vercel.app";
 const SONG_REQUEST_CHANNEL_LINK = "https://whatsapp.com/channel/0029VagJIAr3bbVzV70jSU1p";
 const AI_LOGO_URL = "https://files.catbox.moe/s80m7e.png";
-const PENDING_SONG_TTL_MS = 2 * 60 * 1000;
+const PENDING_SONG_TTL_MS = 5 * 60 * 1000;
 const BUTTON_ID_AUDIO = "play_audio";
 const BUTTON_ID_DOCUMENT = "play_document";
 const BUTTON_ID_VIDEO = "play_video";
@@ -190,7 +190,7 @@ const buildJailbreakCaption = ({ info, author, ago, pushName, emoji }) =>
 ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
 ⎆ @${pushName} _ENJOY_ ${emoji}
   follow our channel
-> ☬ *𝚂𝙾𝚄𝚁𝙲𝙴 :* 𝙹𝙰𝙸𝙻𝙱𝚁𝙴𝙰𝙺 𝙷𝚄𝙱 ☬`;
+> ☬ *𝚂𝙾𝚄𝚁𝙲𝙴 :* 𝙹𝙰𝙸𝙻𝙱𝚁𝙴𝙰𝙺 ☬`;
 
 const stageAResolveSong = async (query) => {
   let url;
@@ -536,7 +536,7 @@ JB({
 ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
 ⎆ @${pushName} _ENJOY_ 🎬
    follow our channel
-> ☬ *𝚂𝙾𝚄𝚁𝙲𝙴 :* 𝙹𝙰𝙸𝙻𝙱𝚁𝙴𝙰𝙺 𝙷𝚄𝙱 ☬`;
+> ☬ *𝚂𝙾𝚄𝚁𝙲𝙴 :* 𝙹𝙰𝙸𝙻𝙱𝚁𝙴𝙰𝙺 ☬`;
 
       await sock.sendMessage(from, {
           video: videoBuffer,
