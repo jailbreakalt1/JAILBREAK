@@ -5,8 +5,6 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-// Pulling backend URL from .env with a fallback to the internal IP
-const BACKEND_URL = process.env.BACKEND_URL || "http://172.18.0.179:5000"; 
 const IMG_BACKEND_URL = process.env.IMG_BACKEND_URL || "https://backend-three-pi-j2o7ert13i.vercel.app";
 const SONG_REQUEST_CHANNEL_LINK = "https://whatsapp.com/channel/0029VagJIAr3bbVzV70jSU1p";
 const AI_LOGO_URL = "https://files.catbox.moe/s80m7e.png";
@@ -17,6 +15,13 @@ const BUTTON_ID_VIDEO = "play_video";
 const pendingSongRequests = new Map();
 //=======
 const MAX_IMG_CARDS = 5;
+
+const THIRD_PARTY_APIS = {
+  elite: process.env.ELITEPROTECH_API_BASE || "https://api.eliteprotech.xyz",
+  yupra: process.env.YUPRA_API_BASE || "https://api.yupra.cloud",
+  okatsu: process.env.OKATSU_API_BASE || "https://api.okatsu.xyz",
+  izumi: process.env.IZUMI_API_BASE || "https://api.izumiii.workers.dev"
+};
 
 const jbContext = {
     forwardingScore: 1,
@@ -39,6 +44,109 @@ const isLikelyImageResponse = (response) => {
 
 const resolveSenderJid = (mek, senderFromCtx) => mek?.key?.participant || mek?.key?.remoteJid || senderFromCtx || "";
 const buildSongRequestKey = ({ from, senderJid }) => `${from}:${senderJid}`;
+
+const AXIOS_DEFAULTS = {
+  timeout: 60000,
+  headers: {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*"
+  }
+};
+
+const extractMediaUrl = (payload = {}) => payload.download || payload.dl || payload.url || payload.result?.download || payload.result?.url;
+
+const fetchFromApi = async (apiName, mode, url) => {
+  const base = THIRD_PARTY_APIS[apiName];
+  const endpoint = mode === "audio" ? "ytmp3" : "ytmp4";
+  const candidates = [
+    `${base}/api/downloader/${endpoint}`,
+    `${base}/api/${endpoint}`,
+    `${base}/${endpoint}`
+  ];
+
+  let lastErr;
+  for (const endpointUrl of candidates) {
+    try {
+      const res = await axios.get(endpointUrl, {
+        ...AXIOS_DEFAULTS,
+        params: { url }
+      });
+      return res.data || {};
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+
+  throw lastErr || new Error(`${apiName} ${mode} endpoint failed`);
+};
+
+const downloadBufferWithFallback = async (mediaUrl) => {
+  try {
+    const audioResponse = await axios.get(mediaUrl, {
+      responseType: "arraybuffer",
+      timeout: 90000,
+      maxContentLength: Infinity,
+      maxBodyLength: Infinity,
+      decompress: true,
+      validateStatus: s => s >= 200 && s < 400,
+      headers: {
+        "User-Agent": AXIOS_DEFAULTS.headers["User-Agent"],
+        "Accept": "*/*",
+        "Accept-Encoding": "identity"
+      }
+    });
+
+    const mediaBuffer = Buffer.from(audioResponse.data);
+    if (mediaBuffer?.length) return mediaBuffer;
+    throw new Error("Empty buffer in arraybuffer mode");
+  } catch (downloadErr) {
+    const statusCode = downloadErr.response?.status || downloadErr.status;
+    if (statusCode === 451) throw downloadErr;
+
+    const streamResponse = await axios.get(mediaUrl, {
+      responseType: "stream",
+      timeout: 90000,
+      maxContentLength: Infinity,
+      maxBodyLength: Infinity,
+      validateStatus: s => s >= 200 && s < 400,
+      headers: {
+        "User-Agent": AXIOS_DEFAULTS.headers["User-Agent"],
+        "Accept": "*/*",
+        "Accept-Encoding": "identity"
+      }
+    });
+
+    const chunks = [];
+    await new Promise((resolve, reject) => {
+      streamResponse.data.on("data", c => chunks.push(c));
+      streamResponse.data.on("end", resolve);
+      streamResponse.data.on("error", reject);
+    });
+
+    const streamBuffer = Buffer.concat(chunks);
+    if (!streamBuffer?.length) throw new Error("Empty buffer in stream mode");
+    return streamBuffer;
+  }
+};
+
+const resolveViaThirdParty = async ({ mode, url }) => {
+  const chain = mode === "audio"
+    ? ["elite", "yupra", "okatsu", "izumi"]
+    : ["elite", "yupra", "okatsu"];
+
+  for (const apiName of chain) {
+    try {
+      const payload = await fetchFromApi(apiName, mode, url);
+      const mediaUrl = extractMediaUrl(payload);
+      if (!mediaUrl) continue;
+      return { payload, mediaUrl };
+    } catch (err) {
+      console.warn(`[THIRD-PARTY:${mode}] ${apiName} failed:`, err?.message || err);
+    }
+  }
+
+  throw new Error("All download sources failed. The content may be unavailable or blocked in your region.");
+};
 
 
 const safeUnlink = (filePath) => {
@@ -99,8 +207,11 @@ const stageAResolveSong = async (query) => {
     url = ytsInfo.url;
   }
 
-  const infoRes = await axios.post(`${BACKEND_URL}/video_info`, { url }, { timeout: 20000 });
-  const info = infoRes.data;
+  const info = {
+    title: ytsInfo?.title || "Unknown Title",
+    timestamp: ytsInfo?.timestamp || "Unknown",
+    thumbnail: ytsInfo?.thumbnail || AI_LOGO_URL
+  };
 
   return {
     url,
@@ -217,7 +328,7 @@ JB({
         return;
       }
       const errMsg = e.response?.data?.error || e.message;
-      reply(`⫎ *System Error:* \`${errMsg}\`\n\n> ◈ URL: ${BACKEND_URL}`);
+      reply(`⫎ *System Error:* \`${errMsg}\`\n\n> ◈ SOURCE: Third-party downloader chain`);
       await sock.sendMessage(from, { react: { text: "❌", key: mek.key } });
     } finally {
       safeUnlink(thumbPath);
@@ -250,13 +361,8 @@ JB({
       await sock.sendMessage(from, { react: { text: "⏳", key: mek.key } });
 
       if (selected === BUTTON_ID_VIDEO) {
-        const videoRes = await axios({
-          method: "post",
-          url: `${BACKEND_URL}/download/video`,
-          data: { url: pending.url },
-          responseType: "arraybuffer",
-          timeout: 600000
-        });
+        const { payload, mediaUrl } = await resolveViaThirdParty({ mode: "video", url: pending.url });
+        const videoBuffer = await downloadBufferWithFallback(mediaUrl);
 
         const videoCaption = buildJailbreakCaption({
           info: pending.info,
@@ -267,9 +373,9 @@ JB({
         });
 
         const videoPayload = {
-          video: Buffer.from(videoRes.data),
+          video: videoBuffer,
           mimetype: "video/mp4",
-          fileName: `${pending.info.title}.mp4`,
+          fileName: `${(payload.title || pending.info.title || "video").replace(/[^\w\s-]/g, "")}.mp4`,
           caption: videoCaption,
           mentions: [pending.senderJid],
           contextInfo: {
@@ -290,9 +396,9 @@ JB({
         } catch (videoSendErr) {
           console.warn("SONG VIDEO FALLBACK DOCUMENT:", videoSendErr?.message || videoSendErr);
           await sock.sendMessage(from, {
-            document: Buffer.from(videoRes.data),
+            document: videoBuffer,
             mimetype: "video/mp4",
-            fileName: `${pending.info.title}.mp4`,
+            fileName: `${(payload.title || pending.info.title || "video").replace(/[^\w\s-]/g, "")}.mp4`,
             caption: `${videoCaption}\n\n⚠️ Video preview unsupported on this client; sent as MP4 file.`,
             mentions: [pending.senderJid],
             contextInfo: videoPayload.contextInfo
@@ -301,10 +407,10 @@ JB({
 
 
         await sock.sendMessage(from, {
-          video: Buffer.from(videoRes.data),
+          video: videoBuffer,
           mimetype: "video/mp4",
           caption: videoCaption,
-          mentions: [pending.sender],
+          mentions: [pending.senderJid],
           contextInfo: {
             ...jbContext,
             externalAdReply: {
@@ -318,13 +424,8 @@ JB({
           }
         }, { quoted: mek });
       } else {
-        const downloadRes = await axios({
-          method: "post",
-          url: `${BACKEND_URL}/download/audio`,
-          data: { url: pending.url },
-          responseType: "arraybuffer",
-          timeout: 300000
-        });
+        const { payload, mediaUrl } = await resolveViaThirdParty({ mode: "audio", url: pending.url });
+        const audioBuffer = await downloadBufferWithFallback(mediaUrl);
 
         const caption = buildJailbreakCaption({
           info: pending.info,
@@ -337,11 +438,7 @@ JB({
         const commonPayload = {
           mimetype: "audio/mpeg",
           caption,
-
           mentions: [pending.senderJid],
-
-          mentions: [pending.sender],
-
           contextInfo: {
             ...jbContext,
             externalAdReply: {
@@ -359,13 +456,13 @@ JB({
 
         if (selected === BUTTON_ID_DOCUMENT) {
           await sock.sendMessage(from, {
-            document: Buffer.from(downloadRes.data),
-            fileName: `${pending.info.title}.mp3`,
+            document: audioBuffer,
+            fileName: `${(payload.title || pending.info.title || "song").replace(/[^\w\s-]/g, "")}.mp3`,
             ...commonPayload
           }, { quoted: mek });
         } else {
           await sock.sendMessage(from, {
-            audio: Buffer.from(downloadRes.data),
+            audio: audioBuffer,
             ...commonPayload
           }, { quoted: mek });
         }
@@ -375,7 +472,7 @@ JB({
     } catch (e) {
       console.error("SONG PICK ERROR:", e);
       if (isBackendTimeout(e)) {
-        return reply("⫎ `Backend timeout while downloading. Please try again.` ⏱️");
+        return reply("⫎ `Downloader timeout while downloading. Please try again.` ⏱️");
       }
       const errMsg = e.response?.data?.error || e.message;
       return reply(`⫎ *System Error:* \`${errMsg}\``);
@@ -415,21 +512,19 @@ JB({
         url = ytsInfo.url;
       }
 
-      const infoRes = await axios.post(`${BACKEND_URL}/video_info`, { url }, { timeout: 20000 });
-      const info = infoRes.data;
+      const info = {
+        title: ytsInfo?.title || "Unknown Title",
+        timestamp: ytsInfo?.timestamp || "Unknown",
+        thumbnail: ytsInfo?.thumbnail || AI_LOGO_URL
+      };
 
       const author = ytsInfo ? ytsInfo.author.name : "Unknown Channel";
       const ago = ytsInfo ? ytsInfo.ago : "Recently";
       const sender = mek.key.participant || from;
       const pushName = mek.pushName || "User";
 
-      const downloadRes = await axios({
-        method: 'post',
-        url: `${BACKEND_URL}/download/video`,
-        data: { url },
-        responseType: 'arraybuffer',
-        timeout: 600000 // 10 minutes
-      });
+      const { mediaUrl } = await resolveViaThirdParty({ mode: "video", url });
+      const videoBuffer = await downloadBufferWithFallback(mediaUrl);
 
       const vidCaption = 
 `⧯ *𝙹𝙰𝙸𝙻𝙱𝚁𝙴𝙰𝙺_𝙰𝙸* 𝚅𝙸𝚂𝚄𝙰𝙻𝚂
@@ -444,7 +539,7 @@ JB({
 > ☬ *𝚂𝙾𝚄𝚁𝙲𝙴 :* 𝙹𝙰𝙸𝙻𝙱𝚁𝙴𝙰𝙺 𝙷𝚄𝙱 ☬`;
 
       await sock.sendMessage(from, {
-          video: Buffer.from(downloadRes.data),
+          video: videoBuffer,
           mimetype: "video/mp4",
           caption: vidCaption,
           mentions: [sender],
