@@ -17,7 +17,7 @@ const pendingSongRequests = new Map();
 const MAX_IMG_CARDS = 5;
 
 const THIRD_PARTY_APIS = {
-  elite: process.env.ELITEPROTECH_API_BASE || "https://api.eliteprotech.xyz",
+  elite: process.env.ELITEPROTECH_API_BASE || "https://eliteprotech-apis.zone.id",
   yupra: process.env.YUPRA_API_BASE || "https://api.yupra.cloud",
   okatsu: process.env.OKATSU_API_BASE || "https://api.okatsu.xyz",
   izumi: process.env.IZUMI_API_BASE || "https://api.izumiii.workers.dev"
@@ -53,10 +53,23 @@ const AXIOS_DEFAULTS = {
   }
 };
 
-const extractMediaUrl = (payload = {}) => payload.download || payload.dl || payload.url || payload.result?.download || payload.result?.url;
+const extractMediaUrl = (payload = {}) => payload.downloadURL || payload.download || payload.dl || payload.url || payload.result?.download || payload.result?.url;
 
 const fetchFromApi = async (apiName, mode, url) => {
   const base = THIRD_PARTY_APIS[apiName];
+
+  if (apiName === "elite") {
+    const eliteRes = await axios.get(`${base}/ytdown`, {
+      ...AXIOS_DEFAULTS,
+      params: {
+        url,
+        format: mode === "audio" ? "mp3" : "mp4"
+      }
+    });
+
+    return eliteRes.data || {};
+  }
+
   const endpoint = mode === "audio" ? "ytmp3" : "ytmp4";
   const candidates = [
     `${base}/api/downloader/${endpoint}`,
