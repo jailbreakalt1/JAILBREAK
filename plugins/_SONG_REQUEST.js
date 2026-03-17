@@ -25,6 +25,7 @@ const THIRD_PARTY_APIS = {
 
 const jbContext = {
     forwardingScore: 1,
+    ai: true,
     isForwarded: true,
     forwardedNewsletterMessageInfo: {
         newsletterJid: '120363424536255731@newsletter',
