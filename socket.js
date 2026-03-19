@@ -6,7 +6,6 @@ const ryan = require('./ryan');
 const { handleStatusUpdate } = require('./plugins/status.js');
 const { storeMessage, handleAntiDelete } = require('./plugins/antidelete.js');
 const { handleChatbot } = require('./plugins/chatbot.js'); 
-const { onMessage: handleAntiLink } = require('./plugins/antilink.js');
 
 // --- CONFIG ---
 const prefix = process.env.PREFIX || '.';
@@ -34,10 +33,15 @@ const sanitizeNumberDigits = (x = '') => String(x).replace(/\D/g, '');
 const bindEvents = async (conn, chalk) => {
     let baileys;
     try { 
-        baileys = await dynamicImport('@vreden/meta'); 
+        baileys = await dynamicImport('@whiskeysockets/baileys'); 
     } catch(e) {}
     
-    const { getContentType, downloadMediaMessage } = baileys || {};
+    const { getContentType, downloadMediaMessage, jidNormalizedUser } = baileys || {};
+
+    const normalizeJid = (jid = '') => {
+        if (!jid) return '';
+        return jidNormalizedUser ? jidNormalizedUser(jid) : jid;
+    };
 
     // --- ⚡ PLUGIN LOADER (RESTORED) ⚡ ---
     const pluginDir = path.join(__dirname, 'plugins');
@@ -68,7 +72,7 @@ const bindEvents = async (conn, chalk) => {
             await storeMessage(mek, conn).catch((err) => console.error('[ANTIDELETE][STORE]', err?.message || err));
             await handleAntiDelete(conn, mek).catch((err) => console.error('[ANTIDELETE][RECOVER]', err?.message || err));
 
-            const from = mek.key.remoteJid;
+            const from = normalizeJid(mek.key.remoteJid);
             const isGroup = from.endsWith('@g.us');
 
             if (from === 'status@broadcast') {
@@ -78,7 +82,7 @@ const bindEvents = async (conn, chalk) => {
 
             // 2. Extract basic info
             const mtype = getContentType(mek.message);
-            const senderJid = isGroup ? mek.key.participant : from;
+            const senderJid = normalizeJid(isGroup ? mek.key.participant : from);
             const senderNumber = sanitizeNumberDigits(senderJid?.split('@')[0] || '');
             const pushName = mek.pushName || 'User';
             const isOwner = ownerNumbers.includes(senderNumber) || mek.key.fromMe;
@@ -95,13 +99,6 @@ const bindEvents = async (conn, chalk) => {
                 mtype === 'templateButtonReplyMessage' ? mek.message.templateButtonReplyMessage.selectedId :
                 ''
             ) || '';
-
-            try {
-                await handleAntiLink(conn, mek, null, { isGroup, from, body });
-            } catch (err) {
-                console.error(chalk.red('[ANTILINK ERROR]'), err);
-            }
-
             const isCmd = body.startsWith(prefix);
             let cmd = null;
             let cmdName = "";

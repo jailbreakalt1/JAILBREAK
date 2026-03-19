@@ -54,7 +54,7 @@ JB({
 
     let baileys;
     try {
-      baileys = await dynamicImport('@vreden/meta');
+      baileys = await dynamicImport('@whiskeysockets/baileys');
     } catch {
       return reply('⚠️ `Failed to load media tools.`');
     }

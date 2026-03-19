@@ -15,7 +15,7 @@ JB({
         // ---------------------------------------------------------
         
         // Import Baileys dynamically
-        const { downloadContentFromMessage } = await import("@vreden/meta");
+        const { downloadContentFromMessage } = await import("@whiskeysockets/baileys");
         
         // Import Chalk dynamically (Example usage added below)
         const chalkModule = await import('chalk');
