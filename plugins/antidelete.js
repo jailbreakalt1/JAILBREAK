@@ -53,7 +53,7 @@ async function storeMessage(mek, conn) {
         if (!from) return;
 
         if (!downloadContentFromMessage) {
-            const baileys = await dynamicImport('@vreden/meta');
+            const baileys = await dynamicImport('@whiskeysockets/baileys');
             downloadContentFromMessage = baileys.downloadContentFromMessage;
         }
 
