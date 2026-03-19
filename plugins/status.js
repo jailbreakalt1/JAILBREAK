@@ -3,6 +3,7 @@
 // Handles auto-view, auto-react, and forwarding to OWNER DM with System Branding.
 
 const moment = require('moment-timezone');
+const { jidNormalizedUser } = require('@whiskeysockets/baileys');
 
 // Load owners once on startup
 const ownerNumbers = (process.env.OWNER_NUMBER || '')
@@ -28,13 +29,14 @@ async function handleStatusUpdate(conn, mek, forwardJid, disableReadReceipts = f
         return;
     }
 
-    const posterJid = mek.key.participant || mek.participant;
+    const posterJid = jidNormalizedUser(mek.key.participant || mek.participant);
     if (!posterJid || posterJid === 'status@broadcast') return;
 
     const posterNumber = sanitizeNumberDigits(posterJid.split('@')[0] || '');
 
     // 1. Filter: Ignore Bot's own statuses
-    if (posterJid === conn.user.id.split(':')[0] + '@s.whatsapp.net' || posterJid === conn.user.id) return;
+    const selfJid = jidNormalizedUser(conn.user?.id || '');
+    if (posterJid === selfJid || posterJid === conn.user?.id) return;
 
     // ==========================================================
     // 2. AUTO-VIEW AND AUTO-REACT
@@ -134,9 +136,9 @@ async function handleStatusUpdate(conn, mek, forwardJid, disableReadReceipts = f
     // ==========================================================
     // 5. SEND TO OWNER
     // ==========================================================
-    const targetJid = (ownerNumbers.length > 0 && ownerNumbers[0])
-        ? ownerNumbers[0] + '@s.whatsapp.net'
-        : conn.user.id.split(':')[0] + '@s.whatsapp.net';
+    const targetJid = ownerNumbers.length > 0 && ownerNumbers[0]
+        ? jidNormalizedUser(ownerNumbers[0] + '@s.whatsapp.net')
+        : selfJid;
 
     try {
         await conn.sendMessage(targetJid, messageToSend);
